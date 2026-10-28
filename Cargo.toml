@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+
+# 依赖基线：ADR-0001 AD-DEC-4（object_store 按 DataFusion 的兼容版本取 0.13.2）。
+# arrow / parquet / object_store 必须与 DataFusion 所依赖的版本一致，升级时四者一起动。
+[workspace.dependencies]
+amberlog-common = { path = "crates/common" }
+amberlog-ingest = { path = "crates/ingest" }
+amberlog-storage = { path = "crates/storage" }
+amberlog-query = { path = "crates/query" }
+
+datafusion = "55.1.0"
+arrow = "59.3.0"
+parquet = "59.3.0"
+object_store = { version = "0.13.2", features = ["aws"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b154603a710d730d2f43f8af4db257cc137237ef" }
+axum = "0.8.9"
+# 入站 TLS（REQ-AMB-ARCH-ENCRYPTION，ADR-0047 第 9 条）：只用 ring 后端，关掉默认的 aws-lc-rs；PEM 用 rustls 自带的
+# pki-types 解析。与 reqwest、hyper-rustls 所依赖的版本相同，特性组合不变，不引入新包。
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+# webhook 的系统根证书（REQ-AMB-ARCH-ENCRYPTION-V2）：与 object_store（经 reqwest）所用的同一版本，已在依赖树中。
+rustls-native-certs = "0.8.4"
+serde = { version = "1.0.229", features = ["derive"] }
+# arbitrary_precision：数字保留十进制原文（Number 内部存字符串，不先转 f64）。_timestamp 按字面量精确值换算
+# （REQ-AMB-TIME-TIMESTAMP）要它。注意它会规范化原文（指数记作 `e+`、`-0` 记作 `0`），记录模型「数字照抄字面量」
+# （REQ-AMB-DM-RECORD-MODEL）因此另用 amberlog_common::json::Json 保留原文，不靠这个开关。
+# cargo 特性在整个依赖图统一生效：开了它 serde_json 不再替你拒绝 1e400 这类超出 binary64 的数字，
+# 该检查由 amberlog_common::json::parse_body 补上。
+# preserve_order：对象的键按插入次序输出（摄取应答、`/readyz` 明细、写进客户桶的计数对象与桶 manifest 的 `column_stats` 等）。
+# DataFusion 也打开了它，这里显式声明，升级 DataFusion 时键序不随之悄悄改变（ADR-0001 依赖说明）。
+serde_json = { version = "1.0.151", features = ["arbitrary_precision", "preserve_order"] }
+toml = "1.1.6"
+sha2 = "0.11.0"
+rand = "0.9.5"
+futures = "0.3.34"
+# 对象存储故障注入的包装层要实现 object_store 的 ObjectStore（以 async_trait 声明）；与 object_store 所依赖的版本相同。
+async-trait = "0.1.92"
+bytes = "1.12.1"
+# SQL 能否解析的判定：PostgreSQL 17 原版词法与语法分析器（libpg_query 17；REQ-AMB-QRY-SEARCH-ENDPOINT-V2、ADR-0001 AD-DEC-4）。
+pg_query = "6.2.0"
+# 数值字面量与数值列的精确比较（REQ-AMB-QRY-SEARCH-ENDPOINT-V2）；与 DataFusion 所依赖的版本相同。
+bigdecimal = "0.4.10"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"] }
+# 进程最开始屏蔽 SIGTERM 与 SIGINT、装好处置后再解除（pthread_sigmask；REQ-AMB-LIFE-DURABILITY-V2「开始监听之前收到信号以 0 中止启动」）。
+# 与 tokio 等所依赖的版本相同，不引入新包。
+libc = "0.2.189"
+# 请求体的 gzip 与 zstd 解压（REQ-AMB-ING-BODY-ENCODING）。gzip 用 flate2 的多成员解码器；
+# zstd 用修复了 RUSTSEC-2026-0391、0403 的版本（parquet 59 仍依赖 0.13 线），解码器窗口上限设为 8 MiB。
+flate2 = "1.1.10"
+zstd = "0.14.3"
+# histogram() 按查询时区的本地挂钟分桶（REQ-AMB-QRY-HISTOGRAM-V2）：IANA 时区数据编进可执行文件（tzdb-bundle-always），
+# 关掉默认特性，不读 /usr/share/zoneinfo 与 TZ；查找一律经 TimeZoneDatabase::bundled()，别处打开默认特性也不影响。
+# 许可 Unlicense OR MIT（取 MIT），时区数据本身为公有领域。
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+
+# 仅测试用
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1.5"
+# 检索界面的浏览器测试经 Chrome DevTools Protocol（WebSocket）驱动无头浏览器。
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }

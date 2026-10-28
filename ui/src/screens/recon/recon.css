@@ -1,0 +1,5 @@
+/* 对账屏的样式。颜色只用 style.css 的变量；判定、差值与各行不着色（REQ-AMB-UI-GOVERNANCE-VERDICT-NEUTRAL）。 */
+
+#recon td.num {
+  text-align: right;
+}

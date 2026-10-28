@@ -1,0 +1,356 @@
+/* 检索屏的样式。颜色只用 style.css 的变量。 */
+
+#search .condbox {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 320px;
+}
+
+#search .condbox textarea {
+  flex: 1;
+  min-width: 320px;
+  min-height: 2.2em;
+}
+
+#search .chips {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  min-height: 2.2em;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#search .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--button);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* 未生效的条件：虚线边（REQ-AMB-UI-SEARCH-STAGED） */
+#search .chip.staged {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+#search .chip-remove {
+  border: none;
+  background: none;
+  padding: 0 4px;
+}
+
+#search .cond-input {
+  position: relative;
+  flex: 1;
+  min-width: 10em;
+}
+
+#search .cond-input input {
+  width: 100%;
+  border: none;
+}
+
+#search .hints {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  top: 100%;
+  min-width: 14em;
+  margin: 2px 0 0;
+  padding: 2px 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#search .hints li {
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+#search .hints li[aria-selected="true"],
+#search .hints li:hover {
+  background: var(--amber-soft);
+}
+
+#search .hints li.text {
+  border-top: 1px solid var(--line);
+  color: var(--link);
+}
+
+#search .confirm {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 「查询」旁的标记：有未生效的改动 */
+#search .staged-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+#search .card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+#search .card .result {
+  border: none;
+  padding: 0;
+}
+
+#search .info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+#search .info #s-info {
+  color: var(--muted);
+}
+
+#search .restore button {
+  margin-right: 4px;
+}
+
+#search .hist {
+  display: flex;
+  flex-direction: column;
+}
+
+#search .hbars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 64px;
+  user-select: none;
+}
+
+#search .hbar {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  cursor: pointer;
+  min-width: 2px;
+}
+
+#search .hbar:hover,
+#search .hbar.picked {
+  background: var(--amber-soft);
+}
+
+#search .hbar .fill {
+  width: 100%;
+  background: var(--amber);
+}
+
+#search .per-bar {
+  margin: 2px 0 0;
+  align-self: flex-end;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#search .hist-area .message p {
+  margin: 4px 0;
+}
+
+#search table.hits td {
+  max-width: 40em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+#search table.hits tr.viewed td:first-child {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+#search table.hits tbody tr:hover,
+#search table.hits tr.viewed {
+  background: var(--amber-soft);
+}
+
+#search table.hits mark {
+  background: var(--amber-soft);
+  color: inherit;
+  outline: 1px solid var(--amber);
+}
+
+#search table.hits th .sort,
+#search table.hits th .hide {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: inherit;
+}
+
+#search table.hits th .hide {
+  visibility: hidden;
+}
+
+#search table.hits th:hover .hide {
+  visibility: visible;
+}
+
+/* 字段栏与结果并排（REQ-AMB-UI-SEARCH-V2-FIELDS-BAR）；收起时字段栏不渲染、不占位（FIELDS-COLLAPSE） */
+#search .results {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+#search .results > .card {
+  flex: 1;
+  min-width: 0;
+}
+
+#search .fields {
+  flex: 0 0 216px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+#search .fields-head {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+#search .fields-head input {
+  flex: 1;
+  min-width: 0;
+}
+
+#search .fields-error,
+#search .fvalues-error {
+  color: var(--brick);
+}
+
+#search .fields-error p,
+#search .fvalues-error p {
+  margin: 2px 0;
+}
+
+#search .fgroup-head {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 4px 2px;
+  font-weight: 600;
+  text-align: left;
+}
+
+#search .fcount {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+#search .field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#search .ftype {
+  flex: 0 0 2.4em;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+#search .fname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: none;
+  background: none;
+  color: var(--link);
+  padding: 2px 0;
+  text-align: left;
+}
+
+#search .fname:disabled {
+  color: var(--text);
+  cursor: default;
+}
+
+#search .fvalues {
+  list-style: none;
+  margin: 0 0 4px 2.4em;
+  padding: 0;
+}
+
+#search .fvalue {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#search .fv-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#search .fv-n {
+  color: var(--muted);
+}
+
+#search .fv-eq,
+#search .fv-ne {
+  padding: 0 6px;
+}
+
+/* 上下文浏览（REQ-AMB-UI-SEARCH-V2 上下文浏览一组）：中心行以加粗与左侧竖线标出 */
+#search .context-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 6px;
+}
+
+#search table.hits tr.center td {
+  font-weight: 600;
+}
+
+#search table.hits tr.center td:first-child {
+  box-shadow: inset 5px 0 0 var(--button);
+}

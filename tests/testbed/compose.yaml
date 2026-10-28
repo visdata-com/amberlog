@@ -1,0 +1,49 @@
+# 测试台架：本地 Silo（对象存储，MinIO 的社区分支）。每个标签一个 compose project、一组宿主端口、一个桶，互不干扰；
+# 用 tools/testbed.sh 起停，不要直接 docker compose up（端口与桶名由脚本按标签派生）。
+services:
+  minio:
+    # Silo：PGSTY 维护的 MinIO 社区分支（AGPL-3.0）。MinIO 上游已归档，Docker Hub 上的 minio/minio、minio/mc 已删除。
+    # 与一键试用的 compose.yaml 同一个镜像，按 tag 与摘要固定。
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: testbed
+      MINIO_ROOT_PASSWORD: testbed-secret
+    ports:
+      - "127.0.0.1:${TESTBED_S3_PORT:?}:9000"
+      - "127.0.0.1:${TESTBED_CONSOLE_PORT:?}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      retries: 30
+    tmpfs:
+      - /data
+
+  bucket:
+    # 与 minio 服务同一个镜像：Silo 镜像里自带 mc。
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7
+    depends_on:
+      minio:
+        condition: service_healthy
+    # 建桶；另建受限用户 amberlog-app（口令 amberlog-app-secret）：可做一切 S3 操作，只是带标签 testbed-deny=1 的对象
+    # 不可读（GetObject，同时管 HEAD）。「对象存储拒绝读取」类测试让被测进程用这个用户，再以 root 给对象打标签，
+    # 得到真实的 403。不经 tools/testbed.sh 另起对象存储时，要做同样的事。
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        mc alias set tb http://minio:9000 testbed testbed-secret
+        mc mb --ignore-existing tb/$${TESTBED_S3_BUCKET:?}
+        cat > /tmp/app.json <<'POLICY'
+        {"Version":"2012-10-17","Statement":[
+          {"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::*"]},
+          {"Effect":"Deny","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::*"],
+           "Condition":{"StringEquals":{"s3:ExistingObjectTag/testbed-deny":"1"}}}]}
+        POLICY
+        mc admin user add tb amberlog-app amberlog-app-secret
+        mc admin policy create tb testbed-app /tmp/app.json
+        # 重复执行时各步都是覆盖或无操作（已挂上的策略再挂一次退出码仍为 0）
+        mc admin policy attach tb testbed-app --user amberlog-app
+    environment:
+      TESTBED_S3_BUCKET: ${TESTBED_S3_BUCKET:?}

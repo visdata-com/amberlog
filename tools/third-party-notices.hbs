@@ -1,0 +1,28 @@
+Amberlog 第三方许可声明 / Third-Party Software Notices
+=====================================================
+
+Amberlog 的预编译二进制与容器镜像包含下列第三方 Rust crate。
+每个 crate 按其许可分发；下面按许可分组，先列使用该许可的 crate，再附许可全文。
+This distribution of Amberlog includes the third-party Rust crates listed
+below. Each crate is distributed under the license shown. The crates are
+grouped by license; the full license text follows each group.
+
+许可概览 / Overview
+-------------------
+{{#each overview}}
+  {{{name}}} ({{{id}}}): {{count}}
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{{name}}} ({{{id}}})
+================================================================================
+
+使用此许可的 crate / Used by:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} <{{{crate.repository}}}>{{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

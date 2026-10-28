@@ -1,0 +1,16 @@
+/* 台账屏的样式。颜色只用 style.css 的变量；判定汇总与各行不着色（REQ-AMB-UI-GOVERNANCE-VERDICT-NEUTRAL）。 */
+
+#ledger thead tr.group th {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+#ledger thead th.verdicts {
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+}
+
+#ledger td.verdict,
+#ledger th.verdict {
+  text-align: right;
+}

@@ -1,0 +1,40 @@
+name: Feature request / 功能建议
+description: Propose a new feature or a change to existing behavior. / 提议一项新功能，或者改变现有的行为。
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Amberlog's external behavior (APIs, configuration keys, command line, data formats, error codes and so on) is defined by the maintainers. A pull request that changes such behavior needs a discussion here first, and the maintainers' agreement before it is submitted. See `CONTRIBUTING.md`.
+
+        Amberlog 对外的行为（接口、配置项、命令行、数据格式、错误码等）由维护者统一定义。改变这些行为的 PR，要先在这里讨论，维护者确认以后再提交。详见 `CONTRIBUTING.md`。
+
+        Chinese and English are both welcome. / 中文、英文都可以。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 要解决的问题
+      description: What you are doing and what gets in the way. Describe the situation before any solution. / 你在做什么、遇到了什么困难。请先讲场景，不要先讲方案。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 建议的做法
+      description: 'Describe it from the user''s side: what to configure, what to call, what result to see. / 从使用者的角度写：配置什么、调用什么、看到什么结果。'
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround / 现在的替代办法
+      description: How you work around it today; other approaches you considered. / 现在你怎么绕过这个问题；还考虑过哪些做法。
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you implement it / 你愿意实现它吗
+      options:
+        - No / 不打算
+        - Yes, after the maintainers agree on the behavior / 愿意，等维护者确认做法
+    validations:
+      required: true

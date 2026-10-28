@@ -1,0 +1,28 @@
+# cargo-about 配置：生成第三方许可声明，随预编译二进制与容器镜像附带。生成命令：sh tools/third-party-notices.sh。
+
+# 与 deny.toml 的 [licenses] allow 保持同一组许可（理由写在 deny.toml）。次序是「A OR B」时优先选哪一个写进声明。
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "bzip2-1.0.6",
+    "PostgreSQL",
+    "CC0-1.0",
+]
+
+# 声明只列随二进制分发的依赖：预编译二进制与镜像只有 Linux 版；
+# 开发依赖与构建依赖不进二进制。依赖许可的全量检查由 deny.toml 做，不受这几项影响。
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+
+# 工作区自己的 crate（publish = false）是 Amberlog 本身，许可见 LICENSE 与 NOTICE，不列为第三方。
+private = { ignore = true }
+
+# pg_query 的元数据只写 MIT。它内嵌并编进二进制的 C 源码另有许可，crate 包里没有许可文件，
+# 由 tools/third-party-notices-bundled.txt 补进声明（见 deny.toml 的 clarify）。

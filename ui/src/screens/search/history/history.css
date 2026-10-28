@@ -1,0 +1,68 @@
+/* 查询历史的列表。颜色只用 style.css 的变量。 */
+
+#search .history {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#search .history-panel {
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  top: 100%;
+  width: min(36em, 90vw);
+  max-height: 60vh;
+  overflow: auto;
+  margin-top: 2px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#search .history-panel ol {
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+
+#search .history-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 4px 6px;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 4px;
+}
+
+#search .history-item:hover {
+  background: var(--amber-soft);
+}
+
+#search .history-item .time {
+  color: var(--muted);
+}
+
+#search .history-sql {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#search .history .confirm {
+  position: absolute;
+  z-index: 11;
+  right: 0;
+  top: 100%;
+  padding: 6px 8px;
+  white-space: nowrap;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}

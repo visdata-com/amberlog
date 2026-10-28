@@ -1,0 +1,24 @@
+[package]
+name = "amberlog-ingest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+amberlog-common.workspace = true
+amberlog-storage.workspace = true
+serde_json.workspace = true
+# 治理计数：计数对象的字节与并发写出各对象。
+bytes.workspace = true
+futures.workspace = true
+# 同一数据集的写入锁跨越 WAL fsync 的等待（异步互斥）。
+tokio.workspace = true
+
+[dev-dependencies]
+# 各接口的测试替身（amberlog_storage::testing）；只在测试构建里打开。
+# fault-injection：进程内测试经 TESTBED_FAULT_WAL 对真实 WAL 注入写入失败。
+amberlog-storage = { workspace = true, features = ["testing", "fault-injection"] }
+arrow.workspace = true
+tokio = { workspace = true, features = ["macros"] }

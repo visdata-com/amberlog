@@ -1,0 +1,28 @@
+{
+  "name": "amberlog-ui",
+  "private": true,
+  "type": "module",
+  "description": "Amberlog 检索界面（REQ-AMB-UI-CONSOLE、REQ-AMB-UI-SEARCH、REQ-AMB-UI-GOVERNANCE）；构建产物为 crates/server/src/ui/index.html（ADR-0055）",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "packageManager": "pnpm@10.34.7+sha512.ba98abc585539933375b5971f4bc6d6c73a1b4b7edc4a879e7d102fe5423d1e02309d67c60a11f04955093a96e521ad9c3b138cdd654ca5be563f378b3ae48bd",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "dependencies": {
+    "preact": "11.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

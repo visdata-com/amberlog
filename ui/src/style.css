@@ -1,0 +1,246 @@
+/* 检索界面的样式（含深色模式）。颜色只经下面的变量；页面不嵌字体，退到系统字体。 */
+
+:root {
+  --bg: #f2f3f0;
+  --panel: #ffffff;
+  --text: #1e2420;
+  --muted: #5f6862;
+  --line: #d8dcd6;
+  --button: #2f4b5a;
+  --button-text: #ffffff;
+  --link: #2f4b5a;
+  --amber: #b9770e;
+  --amber-soft: #f3e3c4;
+  --brick: #b3402e;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #171c19;
+    --panel: #1f2622;
+    --text: #e3e7e1;
+    --muted: #9aa49d;
+    --line: #354039;
+    --button: #5b87a0;
+    --button-text: #171c19;
+    --link: #8db3c8;
+    --amber: #e0a23a;
+    --amber-soft: #3f321b;
+    --brick: #e0806c;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #171c19;
+  --panel: #1f2622;
+  --text: #e3e7e1;
+  --muted: #9aa49d;
+  --line: #354039;
+  --button: #5b87a0;
+  --button-text: #171c19;
+  --link: #8db3c8;
+  --amber: #e0a23a;
+  --amber-soft: #3f321b;
+  --brick: #e0806c;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+button {
+  cursor: pointer;
+  color: var(--link);
+}
+
+button.primary {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: var(--button);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
+}
+
+textarea,
+.time-input,
+.time {
+  font-family: "Noto Sans Mono CJK SC", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 600;
+  color: var(--amber);
+}
+
+.topbar nav {
+  display: flex;
+  gap: 4px;
+}
+
+.topbar nav button[aria-selected="true"] {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: var(--button);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.note,
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+input.invalid {
+  border-color: var(--brick);
+  box-shadow: 0 0 0 1px var(--brick);
+}
+
+main {
+  padding: 12px 16px;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.bar textarea {
+  flex: 1;
+  min-width: 320px;
+  min-height: 2.2em;
+}
+
+.range {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.time-input {
+  width: 15.5em;
+}
+
+.modes button[aria-pressed="true"] {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: var(--button);
+}
+
+.notice {
+  margin: 0;
+  color: var(--muted);
+}
+
+.result {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+}
+
+.result .message p,
+.result .limit {
+  margin: 4px 0;
+}
+
+.slow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.stale {
+  opacity: 0.55;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.jumps button + button {
+  margin-left: 4px;
+}
+
+.tz-filter {
+  width: 7em;
+}

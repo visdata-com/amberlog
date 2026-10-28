@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions / 使用问题
+    url: https://github.com/visdata-com/amberlog/discussions
+    about: Ask installation, configuration and usage questions in Discussions. / 安装、配置、使用中的问题请到 Discussions 提问。
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/visdata-com/amberlog/security/advisories/new
+    about: Report privately; do not open a public issue (see SECURITY.md). / 请私下报告，不要开公开的 issue（见 SECURITY.md）。

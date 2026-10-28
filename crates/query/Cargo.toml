@@ -1,0 +1,36 @@
+[package]
+name = "amberlog-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+amberlog-common.workspace = true
+amberlog-storage.workspace = true
+datafusion.workspace = true
+arrow.workspace = true
+parquet.workspace = true
+object_store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+pg_query.workspace = true
+bigdecimal.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+# 查询结束后把空闲内存还给系统（glibc malloc_trim，REQ-AMB-QRY-RESOURCE-LIMITS-V2 RSS-NO-GROWTH）。
+libc.workspace = true
+tokio.workspace = true
+# 查询时区的查找与本地挂钟换算（REQ-AMB-QRY-HISTOGRAM-V2）。
+jiff.workspace = true
+
+[features]
+# 测试替身（`amberlog_query::testing`）。其他 crate 只在 [dev-dependencies] 里打开，发布构建不编入。
+testing = []
+
+[dev-dependencies]
+# 各接口的测试替身（amberlog_storage::testing）；只在测试构建里打开。
+amberlog-storage = { workspace = true, features = ["testing"] }
+bytes.workspace = true
+tokio.workspace = true

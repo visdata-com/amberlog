@@ -1,0 +1,55 @@
+[package]
+name = "amberlog-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "amberlog"
+path = "src/main.rs"
+
+[dependencies]
+amberlog-common.workspace = true
+amberlog-ingest.workspace = true
+amberlog-storage.workspace = true
+amberlog-query.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+libc.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-native-certs.workspace = true
+# 令牌比较先取摘要；系统测试另用它为 MinIO 台架的 STS 请求自签 SigV4（只读目录模式的只读凭据，REQ-AMB-STO-COLD-CATALOG）。
+sha2.workspace = true
+
+[features]
+# 测试专用的故障注入点：本 crate 的「开始监听之前」暂停点，并转开 amberlog-storage 的注入点。
+# 发布构建不开；测试时显式打开：`cargo test --workspace --features amberlog-server/fault-injection`，
+# 用到注入点的测试要带 `--features fault-injection` 才会运行到注入点。
+fault-injection = ["amberlog-storage/fault-injection"]
+
+[dev-dependencies]
+# 各接口的测试替身（amberlog_storage::testing）；只在测试构建里打开。
+amberlog-storage = { workspace = true, features = ["testing"] }
+amberlog-query = { workspace = true, features = ["testing"] }
+http-body-util.workspace = true
+tower.workspace = true
+# 进程内测试读可见集的 Arrow 批次。
+arrow.workspace = true
+# 系统测试以 root 凭据直接读写 MinIO 台架上的对象（给对象打拒绝读取的标签）。
+object_store.workspace = true
+futures.workspace = true
+# 系统测试读写对象存储中的 Parquet 数据文件（REQ-AMB-STO-HOT-LAYOUT-V2、REQ-AMB-STO-AUDIT-INVARIANTS）。
+parquet.workspace = true
+# 系统测试读冷层表的清单列表与清单（Avro），按 Iceberg 规范独立核对冷层提交（REQ-AMB-STO-LAKE-ENTRY）。
+iceberg.workspace = true
+# 检索界面的系统测试驱动无头浏览器（tests/common/browser.rs）。
+tungstenite.workspace = true

@@ -1,0 +1,97 @@
+/* 单条详情的样式：检索屏右侧的浮层。颜色只用 style.css 的变量。 */
+
+#s-detail {
+  position: fixed;
+  z-index: 20;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(640px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  overflow: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.12);
+}
+
+#s-detail .detail-head,
+#s-detail .detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+#s-detail .detail-time {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+}
+
+#s-detail .detail-tabs button[aria-selected="true"] {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: var(--button);
+}
+
+#s-detail .detail-filter {
+  flex: 1;
+  min-width: 8em;
+}
+
+#s-detail .hint {
+  margin: 0;
+}
+
+#s-detail .detail-fields th,
+#s-detail .detail-fields td {
+  white-space: normal;
+  word-break: break-all;
+}
+
+#s-detail .detail-fields .group-name th {
+  padding-top: 8px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+#s-detail .detail-fields .key {
+  width: 30%;
+  color: var(--text);
+  font-weight: 500;
+}
+
+#s-detail .detail-fields .adds {
+  white-space: nowrap;
+  text-align: right;
+}
+
+#s-detail .detail-fields .adds button {
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+#s-detail .detail-fields .adds button + button {
+  margin-left: 4px;
+}
+
+#s-detail .detail-json {
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#s-detail .detail-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}

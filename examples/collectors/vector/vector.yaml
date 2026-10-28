@@ -1,0 +1,65 @@
+# Vector → Amberlog：从文件尾读日志，按 Amberlog 的 JSON 写入接口发送。
+# Vector → Amberlog: tail log files and send them to Amberlog's JSON ingest endpoint.
+#
+# 实测版本 / Tested with: Vector 0.51.1
+# 用法 / Usage: 见同目录上一级的 README.md / see ../README.md
+#
+# 运行前设置两个环境变量（变量名不要以 AMBERLOG_ 开头，见 README）：
+# Set two environment variables before running (do not prefix them with AMBERLOG_, see README):
+#   INGEST_TOKEN  Amberlog 的访问令牌 / Amberlog access token
+#   SOURCE_ID     本机的来源标识，例如 web-1 / source id of this host, e.g. web-1
+
+sources:
+  app_logs:
+    type: file
+    include:
+      - /var/log/app/*.log
+    # 只读启动之后新写的行。要补发已有内容，改成 beginning。
+    # Read only lines written after startup. Use "beginning" to send existing content too.
+    read_from: end
+
+transforms:
+  to_amberlog:
+    type: remap
+    inputs:
+      - app_logs
+    source: |
+      # 记录时间：取 Vector 读到这一行的时间，换成 UTC 微秒，写进 Amberlog 的 _timestamp。
+      # Record time: the time Vector read the line, as UTC microseconds in Amberlog's _timestamp.
+      ts = timestamp(.timestamp) ?? now()
+      ._timestamp = to_unix_timestamp(ts, unit: "microseconds")
+      del(.timestamp)
+      # Vector 自带的字段 source_type 对检索没有用，去掉；保留 message、file、host。
+      # Drop Vector's source_type; keep message, file and host.
+      del(.source_type)
+
+sinks:
+  amberlog:
+    type: http
+    inputs:
+      - to_amberlog
+    # 把 app 换成你的数据集名（小写字母、数字、下划线）。
+    # Replace "app" with your dataset name (lowercase letters, digits, underscores).
+    uri: https://amberlog.example.internal:8800/api/default/app/_json
+    method: post
+    # codec 为 json 时，Vector 把一批记录编码为一个 JSON 数组，正是 Amberlog 要的请求体。
+    # With the json codec, Vector encodes a batch as one JSON array, which is the body Amberlog expects.
+    encoding:
+      codec: json
+    compression: gzip
+    batch:
+      # 压缩前的批次大小，远小于 Amberlog 的请求体上限 32 MiB。
+      # Batch size before compression, well below Amberlog's 32 MiB body limit.
+      max_bytes: 4194304
+      timeout_secs: 1
+    auth:
+      strategy: bearer
+      token: "${INGEST_TOKEN}"
+    request:
+      headers:
+        X-Amberlog-Source: "${SOURCE_ID}"
+    tls:
+      # Amberlog 用自签证书或内部 CA 时，指向 CA 证书（自签时就是服务端证书本身）。
+      # For a self-signed or internal-CA certificate, point to the CA certificate
+      # (for a self-signed certificate, the server certificate itself).
+      ca_file: /etc/vector/amberlog-ca.crt

@@ -1,0 +1,83 @@
+# cargo-deny 配置：第三方依赖的许可与来源检查，以及 RustSec 漏洞库检查。
+# 用法：`cargo deny check licenses sources`（许可与来源）、`cargo deny check advisories`（漏洞库）。
+# 不用 bans 检查（未配置，按默认只对重复版本给警告）：重复版本来自上游依赖之间的版本差，不影响许可与安全。
+# 检查范围是 Cargo.lock 里的全部依赖，含开发依赖与构建依赖：源码连同 Cargo.lock 一起分发，构建者照单下载它们。
+
+[graph]
+all-features = true
+
+[licenses]
+# 白名单只放与 Apache-2.0 兼容、可随二进制分发的许可。每条写一句理由。
+# 依赖用「A OR B」声明时，只要其中一个在白名单里就通过；不为某个依赖单独放宽，也不为了通过而加许可。
+allow = [
+    # 本项目自己的许可；与自身兼容。
+    "Apache-2.0",
+    # Apache-2.0 加 LLVM 例外：例外只免除二进制分发时的署名要求，比 Apache-2.0 更宽，兼容。
+    "Apache-2.0 WITH LLVM-exception",
+    # 宽松许可，只要求保留版权与许可声明；与 Apache-2.0 兼容，可随二进制分发。
+    "MIT",
+    # 宽松许可，只要求保留版权与许可声明；与 Apache-2.0 兼容。pg_query 内嵌的 protobuf-c、xxhash 用它（见文末 clarify）。
+    "BSD-2-Clause",
+    # 宽松许可，要求保留版权与许可声明，不得用作者名背书；与 Apache-2.0 兼容。
+    "BSD-3-Clause",
+    # 宽松许可，与 MIT 实质相同（OpenBSD 采用）；与 Apache-2.0 兼容。
+    "ISC",
+    # 宽松许可，只要求不冒称原作、修改版注明、保留声明；与 Apache-2.0 兼容。
+    "Zlib",
+    # Unicode 数据文件许可（ICU 数据随 icu_* 等依赖分发），宽松，只要求保留声明；与 Apache-2.0 兼容。
+    "Unicode-3.0",
+    # bzip2 1.0.6 的许可，BSD 式宽松许可，要求保留声明、修改版注明；与 Apache-2.0 兼容。
+    "bzip2-1.0.6",
+    # PostgreSQL 许可，与 MIT、BSD 同类的宽松许可，只要求保留版权与许可声明；与 Apache-2.0 兼容。
+    # pg_query 内嵌并编译 PostgreSQL 17 的解析器源码（见文末 clarify）。
+    "PostgreSQL",
+    # 公有领域贡献声明，放弃全部权利，无署名义务；可随二进制分发。
+    "CC0-1.0",
+]
+# 对许可文本的识别置信度：低于此值按「未能识别」处理，检查不通过（cargo-deny 默认值）。
+confidence-threshold = 0.93
+
+# pg_query 的元数据只写 MIT，但它的 crate 包里带着 libpg_query 的 C 源码并编进二进制：libpg_query 本身（BSD-3-Clause）、
+# PostgreSQL 17.7 的解析器源码（PostgreSQL 许可）、vendor/ 下的 protobuf-c 与 xxhash（BSD-2-Clause）。
+# crate 包里没有这几份许可文件，所以按实际内容补声明（不放宽，只把漏报的许可补进检查）。
+# 许可原文在 tools/third-party-notices-bundled.txt，由 tools/third-party-notices.sh 并入第三方许可声明。
+# 只对 6.2.0 生效：升级 pg_query 时重新核对内嵌源码与许可，再改这里的版本号、
+# 那份许可原文和 tools/third-party-notices.sh 里的 PG_QUERY_VERSION（版本对不上时脚本报错）。
+[[licenses.clarify]]
+crate = "pg_query@6.2.0"
+expression = "MIT AND BSD-3-Clause AND BSD-2-Clause AND PostgreSQL"
+license-files = []
+
+[licenses.private]
+# 工作区自己的 crate（publish = false，许可为 Apache-2.0）不参与第三方许可检查。
+ignore = true
+
+[sources]
+# 只允许 crates.io 与下面逐个列出的 git 仓库；其余注册表与 git 依赖都拒绝。
+# apache/iceberg-rust：ADR-0042 第 13 条以 git 锁定提交（根 Cargo.toml 的 rev），是已认可的依赖纪律例外；
+# 兼容的正式版发布到 crates.io 后改回注册表依赖，并删去本条。
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/apache/iceberg-rust"]
+
+[advisories]
+# RustSec 漏洞库（https://github.com/rustsec/advisory-db），运行时联网取最新版。
+# 已知漏洞一律报错。临时忽略的条目逐条写进 ignore，每条带 reason：编号、理由、复查条件。
+# 已撤回（yanked）的版本只警告，不报错（cargo-deny 默认）。
+ignore = [
+    # quick-xml 0.39.4 经 object_store 0.13.2 引入；object_store 用它解析对象存储返回的 XML 应答（列举、分段上传等）。
+    # 修复版本是 quick-xml >= 0.41.0，要 object_store >= 0.14.1；而 DataFusion 55.x 要求 object_store ^0.13.2，
+    # arrow、parquet、object_store 须与 DataFusion 所依赖的版本一致，所以只能等 DataFusion 换代后一起升级。
+    # 触发条件是对象存储端点返回恶意构造的 XML：端点由运维方配置，通常可信；用明文 HTTP 端点时中间人也能注入。
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 起始标签属性去重检查耗时随属性数平方增长（CVSS 7.5，拒绝服务）。复查条件：DataFusion 发布依赖 object_store >= 0.14.1 的版本时，四者一起升级并删除本条" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader 命名空间声明无上限分配内存（CVSS 7.5，拒绝服务）。复查条件同 RUSTSEC-2026-0194" },
+    # zstd 0.13.3 与 zstd-safe 7.3.0 经 arrow-ipc、parquet 59、datafusion 55、apache-avro 0.22（iceberg 引入）进来。
+    # 0.13 线没有修复版：arrow、parquet 60 已改用 zstd 0.14，但 DataFusion 55.x 仍要求 arrow、parquet 59；
+    # apache-avro 最新版也还在 0.13 线。本仓自己的请求体解压已用 zstd 0.14.3，zstd-safe 8.2.0、zstd-sys 2.1.2 已是修复版。
+    # 这条线上的调用方只用 bulk 接口、stream::read::Decoder、decode_all 与 Encoder::new，
+    # 不调用 with_context 构造函数，不用 stream::write::Decoder，也没有打开 seekable 特性。
+    { id = "RUSTSEC-2026-0391", reason = "zstd with_context 复用上下文时上一段流的数据泄入下一段。依赖图里没有调用 with_context。复查条件：DataFusion 发布依赖 arrow、parquet >= 60 的版本且 apache-avro 换到 zstd >= 0.14.3 时，一起升级并删除本条" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe Seekable::decompress 越界设置 Vec 长度。seekable 特性没有打开。复查条件同 RUSTSEC-2026-0391" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe DCtx::decompress_stream 解压 legacy 帧失败时暴露未初始化内存，经 stream::write::Decoder 可达；通告写明 stream::read::Decoder、decode_all 与 bulk 接口不受影响。依赖图里没有用 stream::write::Decoder。复查条件同 RUSTSEC-2026-0391" },
+]

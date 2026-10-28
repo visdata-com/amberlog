@@ -1,0 +1,38 @@
+[package]
+name = "amberlog-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+amberlog-common.workspace = true
+async-trait = { workspace = true, optional = true }
+arrow.workspace = true
+parquet.workspace = true
+object_store.workspace = true
+iceberg.workspace = true
+bytes.workspace = true
+futures.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# WAL 写线程向异步调用方回复（oneshot）。
+tokio.workspace = true
+# 后台任务与查询之后把分配器的空闲内存还给系统（glibc mallopt、mallinfo2（运行时查找）、malloc_trim；`memory` 模块）。
+libc.workspace = true
+
+[features]
+# 测试专用的故障注入点（WAL 写入失败、提交步骤之间的暂停点），由环境变量 `TESTBED_FAULT_*` 触发；
+# 发布构建不开，代码不编入。约定见 `src/fault.rs` 的模块说明。
+# 对象存储请求的注入由环境变量 `TESTBED_FAULT_STORE` 给出的控制文件触发（`fault::store`）。
+fault-injection = ["dep:async-trait"]
+# 各接口的测试替身（`amberlog_storage::testing`）。其他 crate 只在 [dev-dependencies] 里打开，发布构建不编入。
+testing = []
+
+[dev-dependencies]
+# 集成测试（tests/）要用接口替身（amberlog_storage::testing），经自依赖只在测试构建里打开 testing。
+amberlog-storage = { path = ".", features = ["testing"] }
+tokio.workspace = true

@@ -1,0 +1,86 @@
+name: Bug report / 缺陷报告
+description: Amberlog behaves differently from its documentation, fails or crashes. / Amberlog 的行为与文档不符，或者出错、崩溃。
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please check three things first:
+        - Do not report security vulnerabilities here. Use private vulnerability reporting on the Security tab (see `SECURITY.md`).
+        - Ask usage questions in Discussions.
+        - Remove access tokens, keys, certificate private keys and internal addresses from any configuration, logs and commands you paste.
+
+        感谢报告。请先确认三件事：
+        - 安全漏洞不要在这里报告。请用仓库 Security 页面的私密漏洞报告（见 `SECURITY.md`）。
+        - 使用中的问题请到 Discussions 提问。
+        - 贴出的配置、日志和命令里，删掉访问令牌、密钥、证书私钥和内部地址。
+
+        Chinese and English are both welcome. / 中文、英文都可以。
+  - type: textarea
+    id: version
+    attributes:
+      label: Version / 版本
+      description: "Full output of `amberlog --version`. / `amberlog --version` 的完整输出。"
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: object-store
+    attributes:
+      label: Object storage / 对象存储
+      options:
+        - AWS S3
+        - MinIO
+        - Ceph RGW
+        - Local directory (file://) / 本地目录
+        - Other / 其他
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 运行环境
+      description: Operating system, CPU architecture; behind a reverse proxy or not. / 操作系统、CPU 架构；是否在反向代理之后。
+      placeholder: Ubuntu 24.04, x86_64, behind nginx
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened / 实际发生了什么
+      description: Include HTTP status codes, error messages and process exit codes. / 包括 HTTP 状态码、错误信息、进程退出码。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected / 期望发生什么
+      description: If the documentation describes the expected behavior, link or quote it. / 如果文档写了期望的行为，请附上链接或原文。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Start from launching the server, one action per step. Include the configuration (secrets removed) and the requests. / 从启动开始，一步一个动作。附上用到的配置（删掉密钥）和请求。
+      placeholder: |
+        1. amberlog serve --config amberlog.toml
+        2. curl ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 日志
+      description: Server log lines (stderr, JSON lines) around the failure. / 出错前后的服务端日志（stderr，JSON 行）。
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks / 确认
+      options:
+        - label: I searched existing issues and found no duplicate. / 我搜索过现有的 issue，没有相同的报告。
+          required: true
+        - label: What I pasted contains no tokens, keys or internal addresses. / 我贴出的内容里没有令牌、密钥或内部地址。
+          required: true

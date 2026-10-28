@@ -1,0 +1,59 @@
+# Fluent Bit → Amberlog：从文件尾读日志，按 Amberlog 的 JSON 写入接口发送。
+# Fluent Bit → Amberlog: tail log files and send them to Amberlog's JSON ingest endpoint.
+#
+# 实测版本 / Tested with: Fluent Bit 4.1.1
+# 用法 / Usage: 见 ../README.md / see ../README.md
+#
+# 运行前设置两个环境变量（变量名不要以 AMBERLOG_ 开头，见 README）：
+# Set two environment variables before running (do not prefix them with AMBERLOG_, see README):
+#   INGEST_TOKEN  Amberlog 的访问令牌 / Amberlog access token
+#   SOURCE_ID     本机的来源标识，例如 web-1 / source id of this host, e.g. web-1
+
+service:
+  flush: 1
+  log_level: info
+
+pipeline:
+  inputs:
+    - name: tail
+      tag: app
+      path: /var/log/app/*.log
+      # 只读启动之后新写的行；读到的位置记在 db 文件里，重启后接着读。
+      # Read only lines written after startup; the read position is kept in the db file across restarts.
+      read_from_head: false
+      db: /var/lib/fluent-bit/app-tail.db
+      # 把文件路径记进字段 file。 / Record the file path in field "file".
+      path_key: file
+
+  filters:
+    # 一行日志原文在字段 log 里，改名为 message。 / Rename the raw line from "log" to "message".
+    - name: modify
+      match: app
+      rename: log message
+
+  outputs:
+    - name: http
+      match: app
+      host: amberlog.example.internal
+      port: 8800
+      # 把 app 换成你的数据集名（小写字母、数字、下划线）。
+      # Replace "app" with your dataset name (lowercase letters, digits, underscores).
+      uri: /api/default/app/_json
+      # json：一次发送一个 JSON 数组。记录时间写进 _timestamp，格式为带 Z 的 ISO 8601（RFC 3339）。
+      # json: send one JSON array per request. The record time goes into _timestamp as ISO 8601 (RFC 3339) with Z.
+      format: json
+      json_date_key: _timestamp
+      json_date_format: iso8601
+      compress: gzip
+      header:
+        - Authorization Bearer ${INGEST_TOKEN}
+        - X-Amberlog-Source ${SOURCE_ID}
+      tls: on
+      tls.verify: on
+      # Amberlog 用自签证书或内部 CA 时，指向 CA 证书（自签时就是服务端证书本身）。
+      # For a self-signed or internal-CA certificate, point to the CA certificate
+      # (for a self-signed certificate, the server certificate itself).
+      tls.ca_file: /fluent-bit/etc/amberlog-ca.crt
+      # 发送失败（非 2xx 应答或连接失败）时的重试次数。见 README「应答与重试」。
+      # Retries after a failed send (non-2xx response or connection error). See the README section on responses and retries.
+      retry_limit: 10
