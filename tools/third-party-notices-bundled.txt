@@ -139,23 +139,75 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-检索界面内嵌的 JavaScript 库 / JavaScript library bundled in the search UI
+检索界面内嵌的 JavaScript 库 / JavaScript libraries bundled in the search UI
 ================================================================================
 
-GET /ui 返回的页面（ui/ 的构建产物，编进 Amberlog 的二进制）内嵌了下面的库，
-其许可原文照录如下（ADR-0055 第 6 条；构建期工具不随产物分发，不列）。
-The page served at GET /ui (built from ui/ and compiled into the Amberlog binary)
-bundles the library below. Its license text is reproduced here (build-time tools
-are not distributed with the page and are not listed).
+/ui 工作台的 HTML、JS 与 CSS 随 Amberlog 二进制分发，以下照录其生产依赖树的许可。
+The HTML, JS and CSS for /ui are embedded in the Amberlog binary. License texts
+for its production dependency tree are reproduced below.
 
 --------------------------------------------------------------------------------
-preact 11.0.1 (MIT)
-<https://preactjs.com>, LICENSE in the npm package preact@11.0.1
+react 19.3.1 (MIT)
+<https://react.dev/>, LICENSE in the npm package
 --------------------------------------------------------------------------------
 
-The MIT License (MIT)
+MIT License
 
-Copyright (c) 2015-present Jason Miller
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+react-dom 19.3.1 (MIT)
+<https://react.dev/>, LICENSE in the npm package
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+scheduler 0.28.0 (MIT)
+<https://react.dev/>, LICENSE in the npm package
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
