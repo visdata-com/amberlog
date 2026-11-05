@@ -1,9 +1,28 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+
+function normalizeUiEntry(): Plugin {
+  return {
+    name: "amberlog-ui-entry-slash",
+    apply: "serve" as const,
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const url = request.url ?? "";
+        if (url === "/ui" || url.startsWith("/ui?")) {
+          response.statusCode = 302;
+          response.setHeader("Location", `/ui/${url.slice("/ui".length)}`);
+          response.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig({
   base: "/ui/",
-  plugins: [react()],
+  plugins: [react(), normalizeUiEntry()],
   build: {
     target: "es2022",
     manifest: true,
