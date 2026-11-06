@@ -12,7 +12,7 @@ export function timeTitle(us: bigint, tz: string): string {
 export function Time({ us }: { us: bigint }) {
   const { timezone } = useStore(settings);
   return (
-    <span class="time" title={timeTitle(us, timezone)}>
+    <span className="time" title={timeTitle(us, timezone)}>
       {formatLocal(us, timezone)}
     </span>
   );
