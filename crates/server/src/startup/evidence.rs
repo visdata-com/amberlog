@@ -314,38 +314,42 @@ enum Renamed {
     Exists,
 }
 
-/// 以不覆盖的方式把 `from` 改名为 `to`：`renameat2(RENAME_NOREPLACE)`，文件系统不支持时退为「`link` 后删除原名」。
+/// 以不覆盖的方式把 `from` 改名为 `to`：Linux 用 `renameat2(RENAME_NOREPLACE)`，
+/// 其他平台或文件系统不支持时退为「`link` 后删除原名」。
 fn rename_noreplace(from: &Path, to: &Path) -> io::Result<Renamed> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
-    let (f, t) = (c(from)?, c(to)?);
-    // SAFETY: 两个参数都是以 NUL 结尾的有效路径字符串；AT_FDCWD 表示相对当前目录解析（两者都是绝对路径）。
-    let r = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            f.as_ptr(),
-            libc::AT_FDCWD,
-            t.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if r == 0 {
-        return Ok(Renamed::Done);
-    }
-    let e = io::Error::last_os_error();
-    match e.raw_os_error() {
-        Some(libc::EEXIST) => Ok(Renamed::Exists),
-        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => {
-            match std::fs::hard_link(from, to) {
-                Ok(()) => {
-                    std::fs::remove_file(from)?;
-                    Ok(Renamed::Done)
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(Renamed::Exists),
-                Err(e) => Err(e),
-            }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c =
+            |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
+        let (f, t) = (c(from)?, c(to)?);
+        // SAFETY: 两个参数都是以 NUL 结尾的有效路径字符串；AT_FDCWD 表示相对当前目录解析（两者都是绝对路径）。
+        let r = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                f.as_ptr(),
+                libc::AT_FDCWD,
+                t.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if r == 0 {
+            return Ok(Renamed::Done);
         }
-        _ => Err(e),
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EEXIST) => return Ok(Renamed::Exists),
+            Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => {}
+            _ => return Err(e),
+        }
+    }
+    match std::fs::hard_link(from, to) {
+        Ok(()) => {
+            std::fs::remove_file(from)?;
+            Ok(Renamed::Done)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(Renamed::Exists),
+        Err(e) => Err(e),
     }
 }
 
@@ -568,4 +572,40 @@ async fn run_verify(store: &Store, plan: VerifyPlan, lifecycle: &Lifecycle) -> R
             )
         })?;
     Ok(code)
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn rename_preserves_existing_destination() {
+        let dir = std::env::temp_dir().join(format!(
+            "amberlog-rename-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let from = dir.join("temporary");
+        let to = dir.join("evidence");
+        std::fs::write(&from, b"original").unwrap();
+        assert!(matches!(
+            rename_noreplace(&from, &to).unwrap(),
+            Renamed::Done
+        ));
+        assert!(!from.exists());
+        assert_eq!(std::fs::read(&to).unwrap(), b"original");
+
+        std::fs::write(&from, b"replacement").unwrap();
+        assert!(matches!(
+            rename_noreplace(&from, &to).unwrap(),
+            Renamed::Exists
+        ));
+        assert_eq!(std::fs::read(&to).unwrap(), b"original");
+        assert_eq!(std::fs::read(&from).unwrap(), b"replacement");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
