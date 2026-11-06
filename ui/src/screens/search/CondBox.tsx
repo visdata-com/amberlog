@@ -2,52 +2,21 @@
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
 import { Input } from "../../components/ui/Input.tsx";
-import { type ReactNode, type KeyboardEvent, type SyntheticEvent, useState } from "react";
-import { fieldBeforeOp } from "./fields.ts";
+import type { ReactNode, KeyboardEvent, SyntheticEvent } from "react";
+import { useState } from "react";
 import type { ValueRow } from "./FieldsBar.tsx";
-import { type Condition, type FieldOp, parseCondition, valueText } from "./sql.ts";
+import { conditionDraft, conditionHints, type ConditionHint } from "./conditionInput.ts";
+import type { Condition } from "./sql.ts";
 
 export interface Chip {
   id: number;
   cond: Condition;
 }
 
-const OPS: readonly FieldOp[] = ["=", "!=", "<", "<=", ">", ">=", "LIKE", "IS NULL", "IS NOT NULL"];
-const FULLTEXT_HINT = "按全文检索";
-
 export function chipText(c: Condition): string {
   if (c.kind === "text") return "全文 " + c.text;
   return c.op === "IS NULL" || c.op === "IS NOT NULL" ? c.field + " " + c.op : c.field + " " + c.op + " " + c.value;
 }
-
-type Hint = { kind: "field"; name: string } | { kind: "op"; op: FieldOp } | { kind: "value"; text: string; fill: string } | { kind: "text" };
-
-/**
- * 输入提示：字段名（字段表的字段名，没有字段表时取当前结果表的列名）、运算；「字段名 运算」之后为字段栏已列出的取值；
- * 最后一项为「按全文检索」。
- */
-function hintsFor(input: string, columns: readonly string[], valuesOf: (f: string) => readonly ValueRow[] | null): Hint[] {
-  const s = input.trimStart();
-  const out: Hint[] = [];
-  const field = columns.find((c) => s.startsWith(c + " ") && s.slice(c.length + 1).trim() === "");
-  const withOp = fieldBeforeOp(input, columns);
-  const rows = withOp === null ? null : valuesOf(withOp);
-  if (rows !== null) {
-    for (const r of rows) out.push({ kind: "value", text: r.text, fill: valueText(r) });
-  } else if (withOp !== null) {
-    // 已写了运算、没有可提示的取值：只剩「按全文检索」
-  } else if (field !== undefined) {
-    for (const op of OPS) out.push({ kind: "op", op });
-  } else if (s.trim() !== "") {
-    const low = s.trim().toLowerCase();
-    for (const c of columns) if (c.toLowerCase().includes(low)) out.push({ kind: "field", name: c });
-  }
-  out.push({ kind: "text" });
-  return out;
-}
-
-const hintText = (h: Hint): string =>
-  h.kind === "field" ? h.name : h.kind === "op" ? h.op : h.kind === "value" ? h.text : FULLTEXT_HINT;
 
 export interface CondBoxProps {
   toolbar?: ReactNode;
@@ -58,6 +27,10 @@ export interface CondBoxProps {
   columns: readonly string[];
   /** 字段栏已为该字段列出的取值（取值尚未收起时），没有时为 null。 */
   valuesOf: (field: string) => readonly ValueRow[] | null;
+  input: string;
+  error: string | null;
+  onInput: (text: string) => void;
+  onError: (error: string) => void;
   sql: string;
   confirming: boolean;
   onAdd: (c: Condition) => void;
@@ -69,33 +42,40 @@ export interface CondBoxProps {
 }
 
 export function CondBox(p: CondBoxProps) {
-  const [input, setInput] = useState("");
+  const input = p.input;
   const [open, setOpen] = useState(false);
   const [pick, setPick] = useState(-1);
-  const hints = open && p.mode === "cond" ? hintsFor(input, p.columns, p.valuesOf) : [];
+  const hints = open && p.mode === "cond" ? conditionHints(input, p.columns, p.valuesOf) : [];
+  const guidance = open && hints.length === 0 && p.error === null ? conditionDraft(input, p.columns).error : null;
 
   const commit = (c: Condition | null): void => {
     if (c === null) return;
     p.onAdd(c);
-    setInput("");
+    p.onInput("");
+    setOpen(false);
     setPick(-1);
   };
-  const choose = (h: Hint): void => {
-    if (h.kind === "text") {
-      // 选它即按 TEXT-COND 加入全文条件
-      const s = input.trim();
-      const quoted = s.length >= 2 && s.startsWith('"') && s.endsWith('"') && !s.slice(1, -1).includes('"');
-      const text = quoted ? s.slice(1, -1) : s;
-      commit(text === "" ? null : { kind: "text", text });
-    } else if (h.kind === "value") {
-      setInput(input.trimEnd() + " " + h.fill);
-      setPick(-1);
-    } else {
-      setInput(h.kind === "field" ? h.name + " " : input.trimEnd() + " " + h.op + (h.op.startsWith("IS") ? "" : " "));
+  const choose = (h: ConditionHint): void => {
+    if ("condition" in h) commit(h.condition);
+    else {
+      // 空值运算不再需要额外输入，选择后直接添加。
+      const draft = conditionDraft(h.fill, p.columns);
+      if (h.kind === "op" && draft.condition?.kind === "field") commit(draft.condition);
+      else p.onInput(h.fill);
       setPick(-1);
     }
   };
   const onKey = (e: KeyboardEvent<HTMLInputElement>): void => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      const available = conditionHints(input, p.columns, p.valuesOf);
+      if (available.length > 0) {
+        e.preventDefault();
+        setOpen(true);
+        setPick(e.key === "ArrowDown" ? 0 : available.length - 1);
+      }
+      return;
+    }
     if (e.key === "ArrowDown" && hints.length > 0) {
       e.preventDefault();
       setPick((pick + 1) % hints.length);
@@ -108,7 +88,11 @@ export function CondBox(p: CondBoxProps) {
       e.preventDefault();
       const h = hints[pick];
       if (h !== undefined) choose(h);
-      else commit(parseCondition(input));
+      else {
+        const draft = conditionDraft(input, p.columns);
+        if (draft.error !== null) p.onError(draft.error);
+        else commit(draft.condition);
+      }
     } else if (e.key === "Backspace" && input === "" && p.chips.length > 0) {
       p.onRemove(p.chips[p.chips.length - 1]!.id);
     }
@@ -130,7 +114,7 @@ export function CondBox(p: CondBoxProps) {
       </div>
       {p.mode === "cond" ? (
         <div className="condition-editor">
-          <div className="chips" id="s-conds">
+          <div className={p.error === null ? "chips" : "chips invalid"} id="s-conds">
             {p.chips.map((c) => (
               <span key={c.id} className={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
                 <span className="chip-text" data-verbatim title={chipText(c.cond)}>{chipText(c.cond)}</span>
@@ -151,10 +135,12 @@ export function CondBox(p: CondBoxProps) {
                 aria-expanded={hints.length > 0}
                 aria-controls={hints.length > 0 ? "s-hints" : undefined}
                 aria-activedescendant={hints[pick] !== undefined ? "s-hint-" + pick : undefined}
-                placeholder="输入关键词或字段条件，回车添加"
+                aria-invalid={p.error !== null}
+                aria-describedby={p.error !== null ? "s-cond-error" : guidance !== null ? "s-cond-guide" : undefined}
+                placeholder="输入关键词或字段条件，回车添加或直接查询"
                 value={input}
                 onInput={(e) => {
-                  setInput(e.currentTarget.value);
+                  p.onInput(e.currentTarget.value);
                   setOpen(true);
                   setPick(-1);
                 }}
@@ -169,7 +155,7 @@ export function CondBox(p: CondBoxProps) {
                 <ul className="hints" id="s-hints" role="listbox">
                   {hints.map((h, i) => (
                     <li
-                      key={h.kind + ":" + hintText(h)}
+                      key={h.kind + ":" + h.text}
                       id={"s-hint-" + i}
                       role="option"
                       aria-selected={i === pick}
@@ -181,13 +167,15 @@ export function CondBox(p: CondBoxProps) {
                         choose(h);
                       }}
                     >
-                      {hintText(h)}
+                      {h.text}
                     </li>
                   ))}
                 </ul>
               )}
             </span>
           </div>
+          {p.error !== null && <span className="cond-error" id="s-cond-error" role="alert">{p.error}</span>}
+          {guidance !== null && <span className="cond-guide" id="s-cond-guide">{guidance}</span>}
         </div>
       ) : (
         <textarea

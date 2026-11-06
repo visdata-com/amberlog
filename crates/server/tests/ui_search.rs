@@ -428,8 +428,65 @@ fn ui_search_input_hints() {
     assert!(hints.contains(&"level".into()), "{hints:?}");
     assert_eq!(
         hints.last().map(String::as_str),
-        Some("按全文检索"),
+        Some("添加全文条件：lev"),
         "{hints:?}"
+    );
+}
+
+#[test]
+fn ui_search_input_empty_focus_and_commit_close_hints() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.click("s-cond-input");
+    assert!(!b.exists("#s-hints"));
+    add(&mut b, "timeout");
+    assert!(!b.exists("#s-hints"));
+    assert_eq!(chips(&mut b), vec![("全文 timeout".into(), true)]);
+}
+
+#[test]
+fn ui_search_input_query_commits_draft_once() {
+    let (_fx, s) = start(&[]);
+    ingest_now(&s, "app", json!({"level": "error"}));
+    let mut b = open_in(&s, "UTC", |_| {});
+    choose(&mut b, "app");
+    wait_field(&mut b, "level");
+    b.fill("s-cond-input", "level = error");
+    query(&mut b);
+    let first = wait_requests(&mut b, 1, is_search).remove(0);
+    assert_eq!(
+        query_of(&first)["sql"],
+        r#"SELECT * FROM "app" WHERE "level" = 'error'"#
+    );
+    assert_eq!(b.value("s-cond-input"), "");
+    assert_eq!(chips(&mut b), vec![("level = error".into(), false)]);
+    query(&mut b);
+    let second = wait_requests(&mut b, 2, is_search).remove(1);
+    assert_eq!(query_of(&first)["sql"], query_of(&second)["sql"]);
+    assert_eq!(chips(&mut b).len(), 1);
+}
+
+#[test]
+fn ui_search_input_incomplete_blocks_query_and_sql() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    let before = requests_where(&mut b, is_search).len();
+    b.fill("s-cond-input", "status >=");
+    b.press("s-cond-input", "Enter");
+    assert!(b.wait_until("document.querySelector('#s-cond-error') !== null", WAIT));
+    b.click("s-query");
+    assert_eq!(requests_where(&mut b, is_search).len(), before);
+    assert!(chips(&mut b).is_empty());
+    b.click("s-mode-sql");
+    assert!(!b.exists("#s-sql"));
+    assert_eq!(b.value("s-cond-input"), "status >=");
+    b.fill("s-cond-input", "status >= 500");
+    assert_eq!(
+        to_sql(&mut b),
+        r#"SELECT * FROM "app" WHERE "status" >= 500"#
     );
 }
 
@@ -1696,7 +1753,11 @@ fn ui_search_input_hints_field_table() {
     b.fill("s-cond-input", "lev");
     let h = hints(&mut b);
     assert!(h.contains(&"level".into()), "{h:?}");
-    assert_eq!(h.last().map(String::as_str), Some("按全文检索"), "{h:?}");
+    assert_eq!(
+        h.last().map(String::as_str),
+        Some("添加全文条件：lev"),
+        "{h:?}"
+    );
 }
 
 #[test]
@@ -1709,7 +1770,7 @@ fn ui_search_input_hints_values() {
         h.contains(&"error".into()) && h.contains(&"warn".into()),
         "{h:?}"
     );
-    assert_eq!(h.last().map(String::as_str), Some("按全文检索"), "{h:?}");
+    assert!(!h.iter().any(|text| text.contains("全文")), "{h:?}");
 }
 
 #[test]
