@@ -12,7 +12,8 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "build": "node build.mjs",
     "check": "node build.mjs --check",
-    "dev": "vite"
+    "dev": "vite",
+    "test:dev": "node --test dev-server.test.mjs"
   },
   "dependencies": {
     "react": "19.3.1",
