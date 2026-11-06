@@ -1,6 +1,8 @@
 // 单条详情（REQ-AMB-UI-SEARCH 单条详情一组）：只读检索屏已到手的本页结果，不发请求；字段页（分组、筛选、「加入」）与原始
 // JSON 页；↑↓ 换行，到本页两端停住、不自动翻页；Esc 关闭。浮层的根元素为 `#s-detail`。
 
+import { Input } from "../../../components/ui/Input.tsx";
+import { Checkbox } from "../../../components/ui/Checkbox.tsx";
 import { useLayoutEffect, useRef, useState } from "react";
 import { intOf, rawText, type Hit, type Json } from "../../../lib/json.ts";
 import { useStore } from "../../../lib/store.ts";
@@ -43,6 +45,7 @@ const inInput = (e: KeyboardEvent): boolean => {
 
 export function Detail(p: DetailProps) {
   const { timezone } = useStore(settings);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<"fields" | "json">("fields");
   const [filter, setFilter] = useState("");
   const [edge, setEdge] = useState<string | null>(null);
@@ -69,6 +72,14 @@ export function Detail(p: DetailProps) {
     setEdge(null);
   }, [p.index]);
 
+  useLayoutEffect(() => {
+    const previous = document.activeElement;
+    dialogRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+
   // 键盘：渲染提交后同步挂上（浮层一出现就能收到按键），只挂一次，经 ref 取此刻的处理
   const keys = useRef({ move, onClose: p.onClose });
   keys.current = { move, onClose: p.onClose };
@@ -77,6 +88,18 @@ export function Detail(p: DetailProps) {
       if (e.key === "Escape") {
         e.preventDefault();
         keys.current.onClose();
+      } else if (e.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const items = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+          .filter(item => item.getClientRects().length > 0);
+        const first = items[0], last = items[items.length - 1];
+        if (!first || !last) { e.preventDefault(); dialog.focus(); return; }
+        if (!dialog.contains(document.activeElement) || document.activeElement === dialog ||
+            (e.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
       } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !inInput(e)) {
         e.preventDefault();
         keys.current.move(e.key === "ArrowUp" ? -1 : 1);
@@ -94,7 +117,17 @@ export function Detail(p: DetailProps) {
   };
 
   return (
-    <div id="s-detail" className="detail" role="dialog" aria-label="单条详情" tabIndex={-1}>
+    <>
+      <button type="button" className="detail-backdrop" aria-label="关闭详情" onClick={p.onClose} />
+      <div
+        id="s-detail"
+        ref={dialogRef}
+        className="detail"
+        role="dialog"
+        aria-modal="true"
+        aria-label="单条详情"
+        tabIndex={-1}
+      >
       <header className="detail-head">
         <span id="s-detail-pos">{"第 " + (p.index + 1) + " / " + n + " 行"}</span>
         {ts !== null && (
@@ -125,8 +158,7 @@ export function Detail(p: DetailProps) {
             看前后记录
           </button>
           <label className="field">
-            <input
-              type="checkbox"
+            <Checkbox
               id="s-detail-keep"
               checked={keepConditions}
               onChange={(e) => setKeepConditions(e.currentTarget.checked)}
@@ -160,12 +192,12 @@ export function Detail(p: DetailProps) {
           原始 JSON
         </button>
         {page === "fields" && (
-          <input
+          <Input
             id="s-detail-filter"
             className="detail-filter"
             autoComplete="off"
             aria-label="筛选字段"
-            placeholder="筛选"
+            placeholder="筛选字段名或值"
             value={filter}
             onInput={(e) => setFilter(e.currentTarget.value)}
           />
@@ -214,6 +246,7 @@ export function Detail(p: DetailProps) {
           {prettyJson(hit)}
         </pre>
       )}
-    </div>
+      </div>
+    </>
   );
 }

@@ -1,22 +1,62 @@
 /* 检索屏的样式。颜色只用 style.css 的变量。 */
 
+#search .query-panel {
+  padding: var(--space-2);
+  background: var(--panel);
+  border: var(--border-default);
+  border-radius: var(--radius);
+}
+
 #search .condbox {
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+#search .query-header,
+#search .query-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 320px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+#search .query-actions {
+  margin-left: auto;
+  max-width: 100%;
+  justify-content: flex-end;
+}
+
+#search .query-actions .range {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+#search .query-actions input {
+  max-width: 100%;
+}
+
+#search .modes {
+  display: inline-flex;
+  gap: var(--space-1);
 }
 
 #search .condbox textarea {
-  flex: 1;
-  min-width: 320px;
+  width: 100%;
+  min-width: 0;
+  /* 默认保持紧凑，较长 SQL 可手动向下调整。 */
   min-height: 2.2em;
+  resize: vertical;
+}
+
+#search .condition-editor {
+  flex: 1;
+  min-width: 0;
 }
 
 #search .chips {
-  flex: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -28,6 +68,24 @@
   border-radius: 4px;
 }
 
+#search .chips:focus-within {
+  border-color: var(--focus);
+}
+
+#search .chips.invalid {
+  border-color: var(--brick);
+}
+
+#search .cond-error,
+#search .cond-guide {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+#search .cond-error { color: var(--brick); }
+#search .cond-guide { color: var(--muted); }
+
 #search .chip {
   display: inline-flex;
   align-items: center;
@@ -36,6 +94,13 @@
   border: 1px solid var(--button);
   border-radius: 999px;
   white-space: nowrap;
+  max-width: 100%;
+}
+
+#search .chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 未生效的条件：虚线边（REQ-AMB-UI-SEARCH-STAGED） */
@@ -45,6 +110,7 @@
 }
 
 #search .chip-remove {
+  flex-shrink: 0;
   border: none;
   background: none;
   padding: 0 4px;
@@ -53,7 +119,7 @@
 #search .cond-input {
   position: relative;
   flex: 1;
-  min-width: 10em;
+  min-width: min(16em, 100%);
 }
 
 #search .cond-input input {
@@ -66,17 +132,22 @@
   z-index: 10;
   left: 0;
   top: 100%;
-  min-width: 14em;
+  width: 100%;
+  min-width: min(20em, 100%);
+  max-height: 260px;
+  overflow: auto;
   margin: 2px 0 0;
   padding: 2px 0;
   list-style: none;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
 }
 
 #search .hints li {
-  padding: 2px 10px;
+  padding: 7px 10px;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -90,9 +161,14 @@
   color: var(--link);
 }
 
+#search .hints li.text:first-child {
+  border-top: none;
+}
+
 #search .confirm {
   flex-basis: 100%;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -110,14 +186,15 @@
   flex-direction: column;
   gap: 6px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 8px;
+  border: var(--border-default);
+  border-radius: var(--radius);
+  padding: var(--space-2);
 }
 
 #search .card .result {
   border: none;
   padding: 0;
+  box-shadow: none;
 }
 
 #search .info {
@@ -140,11 +217,29 @@
   flex-direction: column;
 }
 
+#search .hist-header,
+#search .hist-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#search .hist-header { margin-bottom: 12px; }
+#search .hist-title { color: var(--text); font-weight: 600; }
+#search .hist-range { overflow-wrap: anywhere; }
+#search .hist-footer { margin-top: 8px; }
+
 #search .hbars {
   display: flex;
   align-items: flex-end;
   gap: 1px;
-  height: 64px;
+  height: 100px;
+  border-bottom: 1px solid var(--line-strong);
+  background: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--line) calc(25% - 1px), var(--line) 25%);
   user-select: none;
 }
 
@@ -154,12 +249,18 @@
   display: flex;
   align-items: flex-end;
   cursor: pointer;
-  min-width: 2px;
+  min-width: 0;
 }
 
 #search .hbar:hover,
 #search .hbar.picked {
   background: var(--amber-soft);
+}
+
+#search .hbar:focus-visible {
+  outline: none;
+  background: var(--amber-soft);
+  box-shadow: inset 0 0 0 1px var(--amber);
 }
 
 #search .hbar .fill {
@@ -168,10 +269,41 @@
 }
 
 #search .per-bar {
-  margin: 2px 0 0;
-  align-self: flex-end;
+  margin-left: auto;
   color: var(--muted);
   font-size: 12px;
+}
+
+#search .hist-axis { position: relative; height: 32px; margin-top: 6px; }
+#search .hist-axis__tick { position: absolute; color: var(--muted); font-size: 11px; white-space: pre; text-align: center; transform: translateX(-50%); }
+#search .hist-axis__tick[data-edge="start"] { text-align: left; transform: none; }
+#search .hist-axis__tick[data-edge="end"] { text-align: right; transform: translateX(-100%); }
+
+#search .hist-tooltip {
+  position: fixed;
+  z-index: 40;
+  width: min(280px, calc(100vw - 24px));
+  padding: 12px;
+  pointer-events: none;
+  color: var(--text);
+  background: var(--panel-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+}
+
+#search .hist-tooltip__range { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; }
+#search .hist-tooltip__range > :nth-child(odd),
+#search .hist-tooltip__count > span,
+#search .hist-tooltip__zone { color: var(--muted); }
+#search .hist-tooltip__range > :nth-child(even) { text-align: right; }
+#search .hist-tooltip__count { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+#search .hist-tooltip__count strong { color: var(--amber); font-size: 15px; overflow-wrap: anywhere; min-width: 0; }
+#search .hist-tooltip__zone { margin-top: 6px; font-size: 11px; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  #search .hist-axis__tick--minor { display: none; }
 }
 
 #search .hist-area .message p {
@@ -230,12 +362,13 @@
 
 #search .fields {
   flex: 0 0 216px;
+  min-width: 0;
   max-height: 80vh;
   overflow-y: auto;
   padding: 6px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: var(--border-default);
+  border-radius: var(--radius);
   font-size: 13px;
 }
 
@@ -258,11 +391,13 @@
 #search .fields-error p,
 #search .fvalues-error p {
   margin: 2px 0;
+  overflow-wrap: anywhere;
 }
 
 #search .fgroup-head {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   width: 100%;
   border: none;
   background: none;
@@ -272,15 +407,31 @@
   text-align: left;
 }
 
+#search .fgroup-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #search .fcount {
+  flex-shrink: 0;
   color: var(--muted);
   font-weight: normal;
+}
+
+#search .fields .field {
+  display: block;
+  min-width: 0;
+  color: var(--text);
+  white-space: normal;
 }
 
 #search .field-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 #search .ftype {
@@ -310,32 +461,86 @@
 }
 
 #search .fvalues {
+  display: grid;
+  gap: 6px;
   list-style: none;
-  margin: 0 0 4px 2.4em;
+  margin: 4px 0 8px;
   padding: 0;
+  max-height: min(320px, 40vh);
+  max-height: min(320px, 40dvh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
 }
 
 #search .fvalue {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px;
+  background: var(--panel-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+#search .fv-summary {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
 }
 
 #search .fv-text {
   flex: 1;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 #search .fv-n {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  padding: 0 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+#search .fv-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 #search .fv-eq,
 #search .fv-ne {
-  padding: 0 6px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#search .fv-ne {
+  color: var(--muted);
+}
+
+#search .fvalues-status {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* 上下文浏览（REQ-AMB-UI-SEARCH-V2 上下文浏览一组）：中心行以加粗与左侧竖线标出 */
@@ -353,4 +558,178 @@
 
 #search table.hits tr.center td:first-child {
   box-shadow: inset 5px 0 0 var(--button);
+}
+
+#search .query-button {
+  min-width: calc(3em + 2 * var(--space-2) + 2 * var(--border-width));
+}
+
+/* 第一版视觉整理：把检索区域分成工具栏、条件区、字段区和结果区。 */
+#search .bar:first-child,
+#search .bar:nth-child(2) {
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+#search .bar:first-child {
+  gap: 10px;
+}
+
+#search .bar:first-child > input {
+  min-width: 12em;
+  font-weight: 600;
+}
+
+#search .bar:nth-child(2) {
+  align-items: flex-start;
+}
+
+#search .condbox {
+  gap: 8px;
+}
+
+#search .chips {
+  min-height: 34px;
+  padding: 4px 6px;
+  border-color: var(--line-strong);
+  box-shadow: inset 0 1px 2px rgba(23, 33, 43, 0.04);
+}
+
+#search .chip {
+  min-height: 24px;
+  padding: 1px 5px 1px 10px;
+  background: color-mix(in srgb, var(--link) 8%, var(--panel));
+}
+
+#search .card {
+  gap: 8px;
+  padding: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+#search .info {
+  min-height: 30px;
+  padding-bottom: 2px;
+}
+
+#search .info #s-total,
+#search .info .result-heading {
+  color: var(--text);
+  font-weight: 700;
+}
+
+#search .info #s-info {
+  color: var(--muted);
+}
+
+#search .hist-area {
+  padding: 8px 10px 6px;
+  background: var(--panel-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+#search .hbars {
+  height: 100px;
+  gap: 2px;
+  padding: 4px 2px 0;
+}
+
+#search .hbar {
+  border-radius: 2px 2px 0 0;
+}
+
+#search .hbar:hover,
+#search .hbar.picked {
+  background: var(--amber-soft);
+}
+
+#search .hbar .fill {
+  border-radius: 2px 2px 0 0;
+  background: var(--amber);
+}
+
+#search table.hits tbody tr {
+  transition: background-color 100ms ease;
+}
+
+#search table.hits tbody tr:hover,
+#search table.hits tr.viewed {
+  background: var(--amber-soft);
+}
+
+#search table.hits td {
+  max-width: 34em;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+#search table.hits tr:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+#search .fields {
+  flex-basis: 232px;
+  padding: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+#search .fields-head {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  padding-bottom: 6px;
+  background: var(--panel);
+}
+
+#search .fgroup + .fgroup {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+#search .fgroup-head:hover,
+#search .fname:hover:not(:disabled) {
+  background: var(--panel-subtle);
+}
+
+#search .context-bar {
+  padding: 7px 9px;
+  background: var(--panel-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 900px) {
+  #search .results { gap: 8px; }
+  #search .fields { flex-basis: 200px; }
+}
+
+@media (max-width: 640px) {
+  #search .bar:first-child,
+  #search .bar:nth-child(2) { padding: 7px; }
+  #search .condbox,
+  #search .condbox textarea,
+  #search .chips { min-width: 0; width: 100%; }
+  #search .condbox { flex: 1 0 100%; }
+  #search .condbox .modes,
+  #search .condition-editor { flex-basis: 100%; }
+  #search .results { display: block; }
+  #search .fields {
+    width: 100%;
+    max-height: 32vh;
+    margin-bottom: 8px;
+  }
+  #search .fvalues {
+    max-height: min(240px, 22vh);
+    max-height: min(240px, 22dvh);
+  }
+  #search .results > .card { width: 100%; }
+  #search .info { align-items: flex-start; }
+  #search .info .spacer { display: none; }
 }

@@ -3,12 +3,14 @@
 
 import { useLayoutEffect } from "react";
 import { useLocation, useNavigate } from "react-router";
+import { Input } from "./components/ui/Input.tsx";
 import { useStore } from "./lib/store.ts";
 import { SCREEN_PATHS, screenFromPath } from "./shell/routes.ts";
 import { LedgerScreen } from "./screens/ledger/LedgerScreen.tsx";
 import { ReconScreen } from "./screens/recon/ReconScreen.tsx";
 import { SearchScreen } from "./screens/search/SearchScreen.tsx";
 import { TimeZonePicker } from "./shell/TimeZonePicker.tsx";
+import { Select } from "./shell/Select.tsx";
 import {
   confirmToken,
   setScreen,
@@ -61,18 +63,22 @@ function TopBar() {
       )}
       <label className="field">
         <span>外观</span>
-        <select id="theme" value={s.theme} onChange={(e) => setTheme(e.currentTarget.value as Theme)}>
-          {THEMES.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
-          ))}
-        </select>
+        <Select
+          id="theme"
+          aria-label="外观"
+          placeholder="选择外观"
+          value={s.theme}
+          options={THEMES.map((theme) => ({ value: theme.id, label: theme.label }))}
+          onChange={(value) => setTheme(value as Theme)}
+        />
       </label>
       <label className="field">
         <span>口令</span>
-        <input
+        <Input
           id="token"
           type="password"
           autoComplete="off"
+          placeholder="输入访问口令"
           className={s.tokenInvalid ? "invalid" : undefined}
           aria-invalid={s.tokenInvalid}
           value={s.token}
@@ -109,13 +115,13 @@ export function App() {
     });
   }, [screen, navigate]);
   return (
-    <>
+    <div className={screen === "search" ? "app-shell" : "app-shell app-shell--fill"}>
       <TopBar />
       <main>
         <SearchScreen hidden={screen !== "search"} />
         <LedgerScreen hidden={screen !== "ledger"} />
         <ReconScreen hidden={screen !== "recon"} />
       </main>
-    </>
+    </div>
   );
 }

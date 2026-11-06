@@ -1,10 +1,12 @@
 // 某屏的时间范围（REQ-AMB-UI-CONSOLE-TIME-INPUT、QUICK-RANGE、TIME-RANGE-KEPT）：以 UTC 微秒保存；起止框的文字只在
 // 用户编辑该框之后按所选时区换算一次，快捷项、缩放与跳转写入的是时刻；改时区只重显框里的写法，不改范围。
 
+import { Input } from "../components/ui/Input.tsx";
 import { useEffect, useMemo } from "react";
 import { createStore, useStore, type Store } from "../lib/store.ts";
 import { formatLocal, nowUs, parseTimeInput } from "../lib/time.ts";
 import { settings } from "./settings.ts";
+import { Select } from "./Select.tsx";
 
 export interface QuickChoice {
   label: string;
@@ -108,38 +110,40 @@ export function TimeRangeInputs({ range, prefix }: { range: TimeRange; prefix: s
     text !== null ? text : v === null ? "" : formatLocal(v, timezone);
   return (
     <span className="range">
-      <input
+      <Input
         id={prefix + "-start"}
         className="time-input"
         autoComplete="off"
         spellCheck={false}
         aria-label="起"
+        placeholder="开始时间（YYYY-MM-DD HH:mm）"
         value={shown(m.start, m.startText)}
         onInput={(e) => range.edit("start", e.currentTarget.value)}
       />
       <span className="arrow">→</span>
-      <input
+      <Input
         id={prefix + "-end"}
         className="time-input"
         autoComplete="off"
         spellCheck={false}
         aria-label="止"
+        placeholder="结束时间（YYYY-MM-DD HH:mm）"
         value={shown(m.end, m.endText)}
         onInput={(e) => range.edit("end", e.currentTarget.value)}
       />
-      <select
+      <Select
         id={prefix + "-quick"}
+        aria-label="快捷时间范围"
+        placeholder="选择时间范围"
         value={m.quick === null ? CUSTOM : String(m.quick)}
-        onChange={(e) => {
-          const v = e.currentTarget.value;
-          if (v !== CUSTOM) range.setQuick(BigInt(v));
+        options={[
+          { value: CUSTOM, label: "自定义" },
+          ...range.choices.map((c) => ({ value: String(c.us), label: c.label })),
+        ]}
+        onChange={(value) => {
+          if (value !== CUSTOM) range.setQuick(BigInt(value));
         }}
-      >
-        <option value={CUSTOM}>自定义</option>
-        {range.choices.map((c) => (
-          <option key={String(c.us)} value={String(c.us)}>{c.label}</option>
-        ))}
-      </select>
+      />
     </span>
   );
 }

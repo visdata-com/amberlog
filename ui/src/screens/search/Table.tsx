@@ -1,6 +1,7 @@
 // 检索屏的结果表（REQ-AMB-UI-SEARCH-TABLE、TIME-COLUMNS、TABLE-SORT、HIGHLIGHT、TABLE-HIDE）。
 
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
+import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
 import { highlight } from "./fulltext.ts";
 
@@ -50,52 +51,57 @@ export interface TableProps {
 export function Table(p: TableProps) {
   const cols = columnsOf(p.hits).filter((c) => !p.hidden.has(c));
   return (
-    <table className="hits">
-      <thead>
-        <tr>
-          {cols.map((c) => (
-            <th key={c} data-col={c}>
-              {c === "_timestamp" && p.ascending !== null ? (
-                <button type="button" className="sort" id="s-sort" onClick={p.onSort}>
+    <TableScroll rows={p.hits} label="检索结果表格">
+      <table className="hits" aria-label="检索结果">
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th key={c} data-col={c}>
+                {c === "_timestamp" && p.ascending !== null ? (
+                  <button type="button" className="sort" id="s-sort" onClick={p.onSort}>
+                    <TimeHeader label={c} />
+                    {p.ascending ? " ↑" : " ↓"}
+                  </button>
+                ) : p.timeKeys.has(c) ? (
                   <TimeHeader label={c} />
-                  {p.ascending ? " ↑" : " ↓"}
+                ) : (
+                  c
+                )}
+                <button type="button" className="hide" aria-label="隐藏列" onClick={() => p.onHide(c)}>
+                  ×
                 </button>
-              ) : p.timeKeys.has(c) ? (
-                <TimeHeader label={c} />
-              ) : (
-                c
-              )}
-              <button type="button" className="hide" aria-label="隐藏列" onClick={() => p.onHide(c)}>
-                ×
-              </button>
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {p.hits.map((h, i) => (
-          <tr
-            key={i}
-            tabIndex={0}
-            className={[i === p.viewed ? "viewed" : "", i === p.center ? "center" : ""].join(" ").trim() || undefined}
-            onClick={() => p.onOpen(i)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") p.onOpen(i);
-            }}
-          >
-            {cols.map((c) =>
-              h.has(c) ? (
-                // 时刻格的悬停文字由 <Time> 给出；其余格截断时经悬停看全文
-                <td key={c} title={p.timeKeys.has(c) && intOf(h.get(c)) !== null ? undefined : rawText(h.get(c))}>
-                  <Value v={h.get(c)} time={p.timeKeys.has(c)} terms={p.terms} />
-                </td>
-              ) : (
-                <td key={c} />
-              ),
-            )}
+              </th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {p.hits.map((h, i) => (
+            <tr
+              key={i}
+              tabIndex={0}
+              className={[i === p.viewed ? "viewed" : "", i === p.center ? "center" : ""].join(" ").trim() || undefined}
+              onClick={() => p.onOpen(i)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  p.onOpen(i);
+                }
+              }}
+            >
+              {cols.map((c) =>
+                h.has(c) ? (
+                  // 时刻格的悬停文字由 <Time> 给出；其余格截断时经悬停看全文
+                  <td key={c} title={p.timeKeys.has(c) && intOf(h.get(c)) !== null ? undefined : rawText(h.get(c))}>
+                    <Value v={h.get(c)} time={p.timeKeys.has(c)} terms={p.terms} />
+                  </td>
+                ) : (
+                  <td key={c} />
+                ),
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
   );
 }

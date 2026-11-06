@@ -390,7 +390,10 @@ fn ui_console_token_401_marked() {
 fn ui_console_timezone_choices() {
     let (_fx, s) = start(&[]);
     let mut b = open(&s);
-    let v = b.eval("[...document.getElementById('tz').options].map(o => o.value)");
+    b.click("tz");
+    let v = b.eval(
+        "[...document.querySelectorAll('#tz-listbox [role=\"option\"]')].map(o => o.dataset.value)",
+    );
     let choices: Vec<String> = serde_json::from_value(v).unwrap();
     for z in ["UTC", "Asia/Shanghai", "America/New_York"] {
         assert!(
@@ -681,7 +684,9 @@ fn ui_console_empty_result() {
     ingest_at(&s, "app", now_us() - 3 * HOUR_US, json!({"msg": "old"}));
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
-    assert_eq!(b.text("s-result").trim(), "无结果");
+    assert!(b.text("s-result").contains("未找到匹配结果"));
+    assert!(b.text("s-result").contains("扩大时间范围"));
+    assert!(!b.exists("#s-result table"));
 }
 
 #[test]

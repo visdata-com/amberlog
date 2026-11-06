@@ -1,6 +1,7 @@
 // 台账屏（REQ-AMB-UI-GOVERNANCE 台账屏一组）：查 `_ledger`，每个 hit 一行；列与取值的中文对照见 REQ-AMB-UI-GOVERNANCE，另有判定汇总、
 // 按时间戳上报的来源与数值格式；每行可跳到对账屏与检索屏；不提供编辑台账内容的控件（LEDGER-NO-EDIT）。
 
+import { Button } from "../../components/ui/Button.tsx";
 import type { ReactNode } from "react";
 import { useRef } from "react";
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
@@ -9,6 +10,7 @@ import { setDatasets, streamOf } from "../../shell/datasets.ts";
 import { entries } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
+import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
 import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
 import { Bytes, Count } from "./Numbers.tsx";
@@ -92,59 +94,61 @@ const summaryCell = (g: (k: string) => Json | undefined, key: string): string =>
 
 function LedgerTable({ hits, onJump }: { hits: Hit[]; onJump: (dataset: string, to: "recon" | "search") => void }) {
   return (
-    <table className="ledger">
-      <thead>
-        <tr className="group">
-          {COLUMNS.map((_, i) => (
-            <th key={i} />
-          ))}
-          <th colSpan={VERDICT_COLUMNS.length} className="verdicts">
-            各判定的时间窗数
-          </th>
-          <th />
-          <th />
-          <th />
-        </tr>
-        <tr>
-          {COLUMNS.map((c, i) => (
-            <th key={i}>{c.label}</th>
-          ))}
-          {VERDICT_COLUMNS.map(([label]) => (
-            <th key={label} className="verdict">{label}</th>
-          ))}
-          <th>上报中断的来源数</th>
-          <th>按时间戳上报的来源</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {hits.map((h) => {
-          const g = (k: string): Json | undefined => h.get(k);
-          const dataset = g("dataset");
-          const tsSources = g("ts_sources");
-          return (
-            <tr key={rawText(dataset)}>
-              {COLUMNS.map((c, i) => (
-                <td key={i}>{c.cell(g)}</td>
-              ))}
-              {VERDICT_COLUMNS.map(([, k]) => (
-                <td key={k} className="verdict">{summaryCell(g, k)}</td>
-              ))}
-              <td>{summaryCell(g, "silent_sources")}</td>
-              <td>{absent(tsSources) ? (g("reconciliation") === "unknown" ? "—" : "无") : rawText(tsSources)}</td>
-              <td className="jumps">
-                {typeof dataset === "string" && (
-                  <>
-                    <button type="button" onClick={() => onJump(dataset, "recon")}>对账</button>
-                    <button type="button" onClick={() => onJump(dataset, "search")}>检索</button>
-                  </>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <TableScroll rows={hits} label="数据资产台账表格">
+      <table className="ledger" aria-label="数据资产台账">
+        <thead>
+          <tr className="group">
+            {COLUMNS.map((_, i) => (
+              <th key={i} />
+            ))}
+            <th colSpan={VERDICT_COLUMNS.length} className="verdicts">
+              各判定的时间窗数
+            </th>
+            <th />
+            <th />
+            <th />
+          </tr>
+          <tr>
+            {COLUMNS.map((c, i) => (
+              <th key={i}>{c.label}</th>
+            ))}
+            {VERDICT_COLUMNS.map(([label]) => (
+              <th key={label} className="verdict">{label}</th>
+            ))}
+            <th>上报中断的来源数</th>
+            <th>按时间戳上报的来源</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {hits.map((h) => {
+            const g = (k: string): Json | undefined => h.get(k);
+            const dataset = g("dataset");
+            const tsSources = g("ts_sources");
+            return (
+              <tr key={rawText(dataset)}>
+                {COLUMNS.map((c, i) => (
+                  <td key={i}>{c.cell(g)}</td>
+                ))}
+                {VERDICT_COLUMNS.map(([, k]) => (
+                  <td key={k} className="verdict">{summaryCell(g, k)}</td>
+                ))}
+                <td>{summaryCell(g, "silent_sources")}</td>
+                <td>{absent(tsSources) ? (g("reconciliation") === "unknown" ? "—" : "无") : rawText(tsSources)}</td>
+                <td className="jumps">
+                  {typeof dataset === "string" && (
+                    <>
+                      <button type="button" onClick={() => onJump(dataset, "recon")}>对账</button>
+                      <button type="button" onClick={() => onJump(dataset, "search")}>检索</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </TableScroll>
   );
 }
 
@@ -171,11 +175,17 @@ export function LedgerScreen({ hidden }: { hidden: boolean }) {
     <section id="ledger" className="screen" hidden={hidden}>
       <div className="bar">
         <TimeRangeInputs range={range} prefix="l" />
-        <button type="button" id="l-query" className="primary" disabled={req.queryDisabled} onClick={() => void query()}>
+        <Button id="l-query" variant="primary" disabled={req.queryDisabled} onClick={() => void query()}>
           {req.running ? "查询中" : "查询"}
-        </button>
+        </Button>
       </div>
-      <ResultArea req={req} prefix="l" render={(hits) => <LedgerTable hits={hits} onJump={jump} />} />
+      <ResultArea
+        req={req}
+        prefix="l"
+        initial={{ title: "查看数据集台账", description: "选择时间范围，点击「查询」查看数据集的存储情况与对账汇总。" }}
+        emptyDescription="当前时间范围内没有台账记录，可以扩大时间范围后重新查询。"
+        render={(hits) => <LedgerTable hits={hits} onJump={jump} />}
+      />
     </section>
   );
 }

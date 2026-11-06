@@ -2,6 +2,7 @@
 // 以「=」「≠」加入条件。状态与请求在 SearchScreen，这里只画。
 
 import { useState } from "react";
+import { Input } from "../../components/ui/Input.tsx";
 import { type Field, groupFields } from "./fields.ts";
 
 /** 一个取值：原始 JSON 文本、是否 JSON 字符串、显示的文字，与条数原文。 */
@@ -45,11 +46,12 @@ export function FieldsBar(p: FieldsBarProps) {
   return (
     <aside className="fields" id="s-fields">
       <div className="fields-head">
-        <input
+        <Input
           id="s-fields-filter"
           autoComplete="off"
           spellCheck={false}
           aria-label="筛选字段"
+          placeholder="筛选字段名称"
           value={filter}
           onInput={(e) => setFilter(e.currentTarget.value)}
         />
@@ -71,7 +73,7 @@ export function FieldsBar(p: FieldsBarProps) {
         return (
           <section key={key} className="fgroup" data-group={key}>
             <button type="button" className="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
-              <span className="fgroup-name">{g.name ?? "记录字段"}</span>
+              <span className="fgroup-name" title={g.name ?? "记录字段"}>{g.name ?? "记录字段"}</span>
               <span className="fcount">{g.fields.length}</span>
             </button>
             {open &&
@@ -90,11 +92,13 @@ export function FieldsBar(p: FieldsBarProps) {
                         data-verbatim
                         disabled={!expandable}
                         aria-expanded={v !== undefined}
+                        title={f.name}
                         onClick={() => p.onToggleField(f.name)}
                       >
                         {f.name}
                       </button>
                     </div>
+                    {v?.kind === "loading" && <p className="fvalues-status" role="status">正在统计取值…</p>}
                     {v?.kind === "error" && (
                       <div className="fvalues-error">
                         {v.lines.map((l, i) => (
@@ -102,20 +106,29 @@ export function FieldsBar(p: FieldsBarProps) {
                         ))}
                       </div>
                     )}
-                    {v?.kind === "ok" && (
-                      <ul className="fvalues">
+                    {v?.kind === "ok" && v.rows.length === 0 && (
+                      <p className="fvalues-status" role="status">暂无可用取值</p>
+                    )}
+                    {v?.kind === "ok" && v.rows.length > 0 && (
+                      <ul className="fvalues" tabIndex={0} aria-label={f.name + " 的常见取值，可滚动"}>
                         {v.rows.map((r) => (
                           <li key={r.json} className="fvalue">
-                            <span className="fv-text" data-verbatim title={r.text}>
-                              {r.text}
-                            </span>
-                            <span className="fv-n" data-verbatim>{r.n}</span>
-                            <button type="button" className="fv-eq" onClick={() => p.onAdd(f.name, false, r)}>
-                              =
-                            </button>
-                            <button type="button" className="fv-ne" onClick={() => p.onAdd(f.name, true, r)}>
-                              ≠
-                            </button>
+                            <div className="fv-summary">
+                              <span className="fv-text" data-verbatim title={r.text}>
+                                {r.text}
+                              </span>
+                              <span className="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
+                                {r.n}
+                              </span>
+                            </div>
+                            <div className="fv-actions">
+                              <button type="button" className="fv-eq" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>
+                                = 加入筛选
+                              </button>
+                              <button type="button" className="fv-ne" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>
+                                ≠ 排除此值
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
