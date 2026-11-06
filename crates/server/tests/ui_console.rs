@@ -185,7 +185,7 @@ fn ui_console_route_navigation_updates_history_without_queries() {
     assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
     assert_eq!(shown_screen(&mut b), "ledger");
     b.eval("history.back()");
-    assert!(b.wait_until("location.pathname === '/ui/'", WAIT));
+    assert!(b.wait_until("location.pathname === '/ui'", WAIT));
     assert_eq!(shown_screen(&mut b), "search");
     assert_eq!(data_requests(&mut b).len(), requests, "切页触发了查询");
 }
