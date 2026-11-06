@@ -111,8 +111,7 @@ fn range_of(r: &Request) -> (i64, i64) {
 fn fill_range(b: &mut Browser, stream: &str, start: &str, end: &str) {
     screen(b, "search");
     b.fill("s-stream", stream);
-    b.fill("s-start", start);
-    b.fill("s-end", end);
+    search_range(b, start, end);
 }
 
 /// 点「查询」，等结果区出结果。
@@ -537,8 +536,10 @@ fn ui_search_fulltext_narrow_24h() {
     let mut b = open_in(&s, "UTC", |_| {});
     fill_range(&mut b, "app", "2026-10-10 00:00", "2026-10-16 00:00");
     add(&mut b, "timeout");
-    assert_eq!(b.value("s-end"), "2026-10-16 00:00:00.000000");
-    assert_eq!(b.value("s-start"), "2026-10-15 00:00:00.000000");
+    assert!(
+        b.text("s-time-description")
+            .contains("2026-10-15 00:00:00 → 2026-10-16 00:00:00")
+    );
 }
 
 #[test]
@@ -548,7 +549,7 @@ fn ui_search_fulltext_limit_7d() {
     screen(&mut b, "search");
     b.fill("s-stream", "app");
     add(&mut b, "timeout");
-    b.select("s-quick", &(30 * 24 * HOUR_US).to_string());
+    search_quick(&mut b, 30 * 24 * HOUR_US);
     assert!(b.wait_until("document.getElementById('s-query').disabled === true", WAIT));
     assert!(
         b.wait_text("search", LIMIT_TEXT, WAIT),
@@ -563,7 +564,7 @@ fn ui_search_sql_fulltext_note() {
     ingest_now(&s, "app", json!({"m": "timeout"}));
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
-    b.select("s-quick", &(30 * 24 * HOUR_US).to_string());
+    search_quick(&mut b, 30 * 24 * HOUR_US);
     to_sql(&mut b);
     let sql = "SELECT * FROM \"app\" WHERE MATCH_ALL('timeout')";
     b.fill("s-sql", sql);
@@ -587,7 +588,7 @@ fn ui_search_query_not_started() {
     query_done(&mut b);
     assert_eq!(history_items(&mut b).len(), 1, "前提：查询历史中只有一项");
     let n = b.requests_besides_ui().len();
-    b.fill("s-start", "2026/10/16 8点");
+    invalidate_search_time(&mut b);
     b.click("s-query");
     assert!(
         b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -796,7 +797,7 @@ fn ui_search_histogram_timezone_change() {
 fn ui_search_histogram_cleared_on_invalid_time() {
     let (_fx, s) = start(&[FUTURE]);
     let mut b = drawn(&s);
-    b.fill("s-start", "2026/10/30 8点");
+    invalidate_search_time(&mut b);
     b.click("s-query");
     assert!(
         b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -969,8 +970,7 @@ fn ui_search_system_time_columns() {
     assert!(ok, "对账表没有 default/app 的行");
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
-    b.fill("s-start", &utc_text(wide.0));
-    b.fill("s-end", &utc_text(wide.1));
+    search_range(&mut b, &utc_text(wide.0), &utc_text(wide.1));
     let time = |v: &str| {
         v.len() == 26
             && v.bytes().enumerate().all(|(i, c)| match i {
@@ -2414,16 +2414,16 @@ fn ui_search_history_restore_no_request() {
     b.fill("s-stream", "app");
     add(&mut b, "timeout");
     let week = (7 * 24 * HOUR_US).to_string();
-    b.select("s-quick", &week);
+    search_quick(&mut b, week.parse().unwrap());
     query_done(&mut b);
     b.fill("s-stream", "web");
     remove_chip(&mut b, "全文 timeout");
-    b.select("s-quick", &HOUR_US.to_string());
+    search_quick(&mut b, HOUR_US);
     query_done(&mut b);
     let n = search_posts(&mut b);
     pick_history(&mut b, 1);
     assert!(b.wait_until("document.getElementById('s-stream').value === 'app'", WAIT));
-    assert_eq!(b.value("s-quick"), week);
+    assert!(b.text("s-time-trigger").contains("7 天"));
     assert_eq!(chips(&mut b), vec![("全文 timeout".into(), true)]);
     assert!(b.exists("#s-staged"), "恢复后没有未生效的改动的标记");
     std::thread::sleep(Duration::from_millis(500));

@@ -1,3 +1,4 @@
+import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
 import { Button } from "../../components/ui/Button.tsx";
 import { DatasetInput } from "../../shell/DatasetInput.tsx";
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
@@ -15,7 +16,7 @@ import { shownView, useResultRequest, type ResultRequest } from "../../shell/req
 import { ResultArea } from "../../shell/ResultArea.tsx";
 import { onTokenConfirmed, settings } from "../../shell/settings.ts";
 import { Time } from "../../shell/Time.tsx";
-import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
 import { type Bar, bars, countsByStart, pageRows, total } from "./chart.ts";
 import { type Chip, CondBox } from "./CondBox.tsx";
 import { type Field, isStreamName } from "./fields.ts";
@@ -610,7 +611,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 onBlur={(value) => determine(value, true)}
                 onEnter={(value) => determine(value, true)}
               />
-              <TimeRangeInputs range={range} prefix="s" />
+              <TimeRangePicker range={range} prefix="s" hidden={hidden} />
               {fieldsCollapsed && (
                 <button
                   type="button"
