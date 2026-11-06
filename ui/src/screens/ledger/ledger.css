@@ -14,3 +14,41 @@
 #ledger th.verdict {
   text-align: right;
 }
+
+#l-query {
+  min-width: calc(3em + 2 * var(--space-2) + 2 * var(--border-width));
+}
+
+#ledger .result {
+  padding: 0;
+}
+
+#ledger table {
+  min-width: 1320px;
+}
+
+#ledger th,
+#ledger td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+#ledger tbody tr:hover td {
+  background: var(--panel-subtle);
+}
+
+#ledger thead th:first-child,
+#ledger tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--panel);
+}
+
+#ledger thead th:first-child {
+  z-index: 3;
+}
+
+#ledger .jumps button {
+  min-height: 28px;
+}

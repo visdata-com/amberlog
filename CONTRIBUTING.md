@@ -78,17 +78,19 @@ Notes:
 - `K` is a bench label. When several working directories run tests at the same time, give each its own label (`K`, `B`, `C`, `D`, `E`); their ports and storage buckets do not collide.
 - The encryption tests need the bench started by `tools/testbed-encryption.sh`: one object store with TLS and a key service, and one whose key service has been stopped. Its output contains multi-line certificates, so import it with `eval`. Without this bench, these tests report that `TESTBED_TLS_*` is not set.
 
-**Search UI (`ui/`).** The UI source is in `ui/`; its build output `crates/server/src/ui/index.html` is committed too, and the Rust build does not run Node. If you change files under `ui/`, rebuild in `ui/` and commit the output together with the source:
+**Search UI (`ui/`).** The UI source is in `ui/`; its Vite build output `crates/server/src/ui/` (HTML and hashed JS/CSS) is committed too, and the Rust build does not run Node. If you change files under `ui/`, rebuild in `ui/` and commit the output together with the source:
 
 ```sh
 cd ui
 corepack enable                    # gets pnpm 10 as pinned by packageManager in package.json
 pnpm install --frozen-lockfile
 pnpm typecheck && pnpm test
-pnpm build                         # regenerates crates/server/src/ui/index.html
+pnpm build                         # regenerates crates/server/src/ui/
 pnpm check                         # rebuilds and compares byte for byte with the committed output
 cd .. && node tools/ui-deps-check.mjs   # licenses and sources of the front-end dependencies
 ```
+
+For development, run the Rust service on port 8800 and `pnpm dev` in `ui/`, then open `http://127.0.0.1:5173/ui/`. Vite proxies `/api/`, `/healthz`, and `/readyz` to the service and updates the UI on save. To use a different backend, copy `ui/.env.example` to `ui/.env.local`, or set `UI_BACKEND_URL` when starting Vite. Shell variables take precedence over environment files; `AMBERLOG_API_ORIGIN` remains the fallback. The target must be an HTTP(S) origin without credentials, a path, query or fragment. Restart Vite after changing it. Run `pnpm test:dev` to check the proxy, entry redirects and file updates. Development requests preserve the page token; use a development backend and storage. The React plugin and existing `/ui` redirect remain enabled. Starting the dev server does not modify the embedded production assets. The production entry remains `/ui`; all resources are embedded in the binary, so users do not install Node or deploy a resource directory or reverse proxy. The build budget is 512 KiB total raw / 192 KiB gzip, replacing the single-HTML 200 KiB limit because React is included. Raise it only with an explanation in the pull request.
 
 If the build output conflicts in a merge, take either side, merge the source, then rebuild; do not merge the output by hand.
 
@@ -204,17 +206,19 @@ tools/testbed-encryption.sh K down
 - `K` 是台架的标签。几个工作目录要同时跑测试时，各用一个标签（`K`、`B`、`C`、`D`、`E`），它们的端口和桶互不冲突。
 - 加密相关的测试要用 `tools/testbed-encryption.sh` 起的台架：一台开 TLS、接密钥服务的对象存储，另一台的密钥服务已停掉。它打印的变量含多行证书，要用 `eval` 导入。没起这套台架时，这些测试报 `TESTBED_TLS_*` 未设置。
 
-**检索界面（`ui/`）。** 界面的源码在 `ui/`，构建产物是 `crates/server/src/ui/index.html`，也提交在仓库里；编译 Rust 时不调用 Node。改了 `ui/` 下的文件，要在 `ui/` 目录里重新构建，并把产物一起提交：
+**检索界面（`ui/`）。** 界面的源码在 `ui/`，Vite 构建产物是 `crates/server/src/ui/`（HTML 与带哈希的 JS/CSS），也提交在仓库里；编译 Rust 时不调用 Node。改了 `ui/` 下的文件，要在 `ui/` 目录里重新构建，并把产物一起提交：
 
 ```sh
 cd ui
 corepack enable                    # 按 package.json 的 packageManager 取 pnpm 10
 pnpm install --frozen-lockfile
 pnpm typecheck && pnpm test
-pnpm build                         # 重新生成 crates/server/src/ui/index.html
+pnpm build                         # 重新生成 crates/server/src/ui/
 pnpm check                         # 重新构建并与提交的产物逐字节比对
 cd .. && node tools/ui-deps-check.mjs   # 前端依赖的许可与来源
 ```
+
+开发时先在 8800 端口启动 Rust 服务，再在 `ui/` 执行 `pnpm dev`，打开 `http://127.0.0.1:5173/ui/`。Vite 代理 `/api/`、`/healthz` 和 `/readyz`，保存源码即可更新。后端地址可通过复制 `ui/.env.example` 为 `ui/.env.local` 后修改，或启动时设置 `UI_BACKEND_URL`；shell 环境变量优先于文件，`AMBERLOG_API_ORIGIN` 保留为后备选项。地址只接受 HTTP(S) 来源，不含凭据、路径、查询串或片段，修改后需重启 Vite。`pnpm test:dev` 验证代理、入口跳转与文件更新行为。请求会保留页面令牌，请连接开发实例和开发存储。继续使用 React 插件，并保留 `/ui` 的跳转处理；启动开发服务不会修改生产嵌入资源。正式入口仍为 `/ui`。全部资源嵌入二进制，用户无需安装 Node、部署资源目录或配置反向代理。React 引入后，预算从单个 HTML 的 200 KiB 改为全部资源原始体积 512 KiB / gzip 192 KiB；提高预算需在 PR 中说明。
 
 产物合并冲突时，取任一边，合完源码后重新构建，不要手工合并。
 

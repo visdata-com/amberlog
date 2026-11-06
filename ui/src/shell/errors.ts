@@ -10,7 +10,6 @@ export const FAILED = "请求失败";
 export const CONNECT = "无法连接服务";
 export const CANCELLED = "已取消。服务端可能仍在执行这次查询，马上重查可能提示服务繁忙";
 export const BAD_TIME = "时刻格式无效";
-export const EMPTY = "无结果";
 export const DEFAULT_RETRY_SECONDS = 5;
 
 /** 429 且响应体为 `reason` 为 `too_many_queries` 的错误信封。 */

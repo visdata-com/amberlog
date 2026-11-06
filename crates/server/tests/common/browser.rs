@@ -215,6 +215,12 @@ impl Browser {
         self.target = target.to_owned();
         self.call("Network.enable", json!({}));
         self.call("Page.enable", json!({}));
+        // 无头或后台标签页可能没有焦点，focus()/blur() 因而不产生 focusin/focusout。
+        // 模拟前台页面，确保测试中的口令确认等焦点交互确实发生。
+        self.call(
+            "Emulation.setFocusEmulationEnabled",
+            json!({"enabled": true}),
+        );
         if let Some(tz) = self.timezone.clone() {
             self.call("Emulation.setTimezoneOverride", json!({"timezoneId": tz}));
         }
@@ -584,14 +590,35 @@ impl Browser {
         ));
     }
 
-    /// 下拉框选值并触发 `change` 事件。
+    /// 自定义下拉框选值；兼容仍使用原生下拉框的旧页面。
     pub fn select(&mut self, id: &str, value: &str) {
-        self.eval(&format!(
-            "(() => {{ const e = document.getElementById({id}); e.value = {value}; \
-             e.dispatchEvent(new Event('change', {{bubbles: true}})); }})()",
+        let native = self.eval(&format!(
+            "document.getElementById({}) instanceof HTMLSelectElement",
+            json!(id)
+        ));
+        if native.as_bool() == Some(true) {
+            self.eval(&format!(
+                "(() => {{ const e = document.getElementById({id}); e.value = {value}; \
+                 e.dispatchEvent(new Event('change', {{bubbles: true}})); }})()",
+                id = json!(id),
+                value = json!(value)
+            ));
+            return;
+        }
+        // 分成两次操作，让 React 先提交弹出的选项列表。
+        self.click(id);
+        let selected = self.eval(&format!(
+            "(() => {{ const list = document.getElementById({id} + '-listbox'); \
+             const option = list && [...list.querySelectorAll('[role=option]')].find(o => o.dataset.value === {value}); \
+             if (!option) return false; option.click(); return true; }})()",
             id = json!(id),
             value = json!(value)
         ));
+        assert_eq!(
+            selected.as_bool(),
+            Some(true),
+            "missing option {value} in {id}"
+        );
     }
 
     /// 让元素失去焦点（触发 `blur` 事件）。
