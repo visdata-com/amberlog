@@ -554,7 +554,7 @@ fn ui_console_time_input_invalid() {
         }
         screen(&mut b, "search");
         b.fill("s-stream", "app");
-        assert_eq!(b.text("s-result").trim(), "");
+        assert!(b.exists("#s-result .result-state[data-kind=idle]"));
         b.fill("s-start", start);
         b.fill("s-end", end);
         b.click("s-query");

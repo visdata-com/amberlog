@@ -261,7 +261,7 @@ fn ui_search_dataset_401_retry() {
         ),
         "口令框未标出"
     );
-    assert_eq!(b.text("s-result").trim(), "", "结果区有出错文字");
+    assert!(b.exists("#s-result .result-state[data-kind=idle]"));
     assert!(!disabled(&mut b, "s-query"));
     fill_token(&mut b, TOKEN);
     wait_requests(&mut b, 2, is_candidates);
