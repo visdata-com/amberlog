@@ -3,3 +3,29 @@
 #recon td.num {
   text-align: right;
 }
+
+#r-query {
+  min-width: calc(3em + 2 * var(--space-2) + 2 * var(--border-width));
+}
+
+#recon .result {
+  padding: 0;
+}
+
+#recon table {
+  min-width: 1080px;
+}
+
+#recon th,
+#recon td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+#recon tbody tr:hover td {
+  background: var(--panel-subtle);
+}
+
+#recon .notice {
+  max-width: 1200px;
+}

@@ -111,8 +111,7 @@ fn range_of(r: &Request) -> (i64, i64) {
 fn fill_range(b: &mut Browser, stream: &str, start: &str, end: &str) {
     screen(b, "search");
     b.fill("s-stream", stream);
-    b.fill("s-start", start);
-    b.fill("s-end", end);
+    search_range(b, start, end);
 }
 
 /// 点「查询」，等结果区出结果。
@@ -128,7 +127,7 @@ fn disabled(b: &mut Browser, id: &str) -> bool {
 /// 分布图的柱：分桶起点与悬停文字。
 fn bars(b: &mut Browser) -> Vec<(String, String)> {
     let v = b.eval(
-        "[...document.querySelectorAll('#s-hist .hbar')].map(e => [e.dataset.start, e.title])",
+        "[...document.querySelectorAll('#s-hist .hbar')].map(e => [e.dataset.start, e.getAttribute('aria-label')])",
     );
     serde_json::from_value(v).unwrap()
 }
@@ -261,7 +260,7 @@ fn ui_search_dataset_401_retry() {
         ),
         "口令框未标出"
     );
-    assert_eq!(b.text("s-result").trim(), "", "结果区有出错文字");
+    assert!(b.exists("#s-result .result-state[data-kind=idle]"));
     assert!(!disabled(&mut b, "s-query"));
     fill_token(&mut b, TOKEN);
     wait_requests(&mut b, 2, is_candidates);
@@ -429,8 +428,65 @@ fn ui_search_input_hints() {
     assert!(hints.contains(&"level".into()), "{hints:?}");
     assert_eq!(
         hints.last().map(String::as_str),
-        Some("按全文检索"),
+        Some("添加全文条件：lev"),
         "{hints:?}"
+    );
+}
+
+#[test]
+fn ui_search_input_empty_focus_and_commit_close_hints() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.click("s-cond-input");
+    assert!(!b.exists("#s-hints"));
+    add(&mut b, "timeout");
+    assert!(!b.exists("#s-hints"));
+    assert_eq!(chips(&mut b), vec![("全文 timeout".into(), true)]);
+}
+
+#[test]
+fn ui_search_input_query_commits_draft_once() {
+    let (_fx, s) = start(&[]);
+    ingest_now(&s, "app", json!({"level": "error"}));
+    let mut b = open_in(&s, "UTC", |_| {});
+    choose(&mut b, "app");
+    wait_field(&mut b, "level");
+    b.fill("s-cond-input", "level = error");
+    query(&mut b);
+    let first = wait_requests(&mut b, 1, is_search).remove(0);
+    assert_eq!(
+        query_of(&first)["sql"],
+        r#"SELECT * FROM "app" WHERE "level" = 'error'"#
+    );
+    assert_eq!(b.value("s-cond-input"), "");
+    assert_eq!(chips(&mut b), vec![("level = error".into(), false)]);
+    query(&mut b);
+    let second = wait_requests(&mut b, 2, is_search).remove(1);
+    assert_eq!(query_of(&first)["sql"], query_of(&second)["sql"]);
+    assert_eq!(chips(&mut b).len(), 1);
+}
+
+#[test]
+fn ui_search_input_incomplete_blocks_query_and_sql() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    let before = requests_where(&mut b, is_search).len();
+    b.fill("s-cond-input", "status >=");
+    b.press("s-cond-input", "Enter");
+    assert!(b.wait_until("document.querySelector('#s-cond-error') !== null", WAIT));
+    b.click("s-query");
+    assert_eq!(requests_where(&mut b, is_search).len(), before);
+    assert!(chips(&mut b).is_empty());
+    b.click("s-mode-sql");
+    assert!(!b.exists("#s-sql"));
+    assert_eq!(b.value("s-cond-input"), "status >=");
+    b.fill("s-cond-input", "status >= 500");
+    assert_eq!(
+        to_sql(&mut b),
+        r#"SELECT * FROM "app" WHERE "status" >= 500"#
     );
 }
 
@@ -537,8 +593,10 @@ fn ui_search_fulltext_narrow_24h() {
     let mut b = open_in(&s, "UTC", |_| {});
     fill_range(&mut b, "app", "2026-10-10 00:00", "2026-10-16 00:00");
     add(&mut b, "timeout");
-    assert_eq!(b.value("s-end"), "2026-10-16 00:00:00.000000");
-    assert_eq!(b.value("s-start"), "2026-10-15 00:00:00.000000");
+    assert!(
+        b.text("s-time-description")
+            .contains("2026-10-15 00:00:00 → 2026-10-16 00:00:00")
+    );
 }
 
 #[test]
@@ -548,7 +606,7 @@ fn ui_search_fulltext_limit_7d() {
     screen(&mut b, "search");
     b.fill("s-stream", "app");
     add(&mut b, "timeout");
-    b.select("s-quick", &(30 * 24 * HOUR_US).to_string());
+    search_quick(&mut b, 30 * 24 * HOUR_US);
     assert!(b.wait_until("document.getElementById('s-query').disabled === true", WAIT));
     assert!(
         b.wait_text("search", LIMIT_TEXT, WAIT),
@@ -563,7 +621,7 @@ fn ui_search_sql_fulltext_note() {
     ingest_now(&s, "app", json!({"m": "timeout"}));
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
-    b.select("s-quick", &(30 * 24 * HOUR_US).to_string());
+    search_quick(&mut b, 30 * 24 * HOUR_US);
     to_sql(&mut b);
     let sql = "SELECT * FROM \"app\" WHERE MATCH_ALL('timeout')";
     b.fill("s-sql", sql);
@@ -587,7 +645,7 @@ fn ui_search_query_not_started() {
     query_done(&mut b);
     assert_eq!(history_items(&mut b).len(), 1, "前提：查询历史中只有一项");
     let n = b.requests_besides_ui().len();
-    b.fill("s-start", "2026/10/16 8点");
+    invalidate_search_time(&mut b);
     b.click("s-query");
     assert!(
         b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -660,6 +718,9 @@ fn ui_search_histogram_draw() {
     let (_fx, s) = start(&[FUTURE]);
     let mut b = drawn(&s);
     assert_eq!(b.text("s-per-bar"), "每柱 1m");
+    assert!(b.exists("#s-hist .hist-axis"));
+    assert!(b.text("s-hist").contains("08:00"));
+    assert!(b.text("s-hist").contains("09:00"));
     assert!(
         b.wait_text("s-total", "共 4 条", WAIT),
         "{}",
@@ -675,17 +736,26 @@ fn ui_search_histogram_tooltip_timezone() {
     fill_range(&mut b, "app", "2026-10-30 16:00", "2026-10-30 17:00");
     query(&mut b);
     wait_bars(&mut b, 60);
-    for (_, title) in bars(&mut b) {
-        let want = if title.starts_with("2026-10-30 16:15:00.000000") {
+    for (_, label) in bars(&mut b) {
+        let want = if label.starts_with("2026-10-30 16:15:00") {
             "3"
-        } else if title.starts_with("2026-10-30 16:40:00.000000") {
+        } else if label.starts_with("2026-10-30 16:40:00") {
             "1"
         } else {
             "0"
         };
-        let n = title.split_whitespace().nth(2).unwrap_or_default();
-        assert_eq!(n, want, "{title}");
+        assert!(label.contains(&format!("，{want} 条日志")), "{label}");
     }
+    assert!(!b.exists("#s-hist .hbar[title]"), "柱体不再依赖原生 title");
+    b.eval(
+        "(() => { const e = document.querySelector('#s-hist .hbar[data-start=\"1793348100000000\"]'); \
+         const r = e.getBoundingClientRect(); e.dispatchEvent(new PointerEvent('pointerover', \
+         {bubbles:true,pointerType:'mouse',clientX:r.x+r.width/2,clientY:r.y+10})); })()"
+    );
+    assert!(b.wait_text("s-hist-tooltip", "2026-10-30 16:15:00", WAIT));
+    assert!(b.text("s-hist-tooltip").contains("2026-10-30 16:16:00"));
+    assert!(b.text("s-hist-tooltip").contains("3 条"));
+    assert!(b.text("s-hist-tooltip").contains("Asia/Shanghai"));
 }
 
 #[test]
@@ -706,20 +776,31 @@ fn ui_search_histogram_collapse() {
     ingest_now(&s, "app", json!({"a": 1}));
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
+    assert!(!b.exists("#s-hist-toggle"), "尚未查询时不应显示分布图开关");
+    search_stream(&mut b, "app");
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
     b.click("s-hist-toggle");
     search_stream(&mut b, "app");
     wait_requests(&mut b, 1, is_count);
     b.reopen(&url(&s));
     fill_token(&mut b, TOKEN);
-    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
+    assert!(
+        !b.exists("#s-hist-toggle"),
+        "记住收起设置后，首次展示也不应显示开关"
+    );
     search_stream(&mut b, "app");
+    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
     let counts = wait_requests(&mut b, 2, is_count);
     for c in &counts {
         assert_eq!(sql_of(c), "SELECT count(*) AS n FROM \"app\"");
     }
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(requests_where(&mut b, is_histogram).len(), 0);
+    assert_eq!(requests_where(&mut b, is_histogram).len(), 1);
     assert!(!b.exists("#s-hist"), "收起后分布图区仍占位");
+    b.click("s-hist-toggle");
+    let h = wait_requests(&mut b, 2, is_histogram).remove(1);
+    assert!(b.wait_finished(&h, WAIT));
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
 }
 
 #[test]
@@ -752,8 +833,7 @@ fn ui_search_histogram_sql_mode() {
     search_sql(&mut b, "SELECT host FROM \"app\"");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(data_requests(&mut b).len(), before + 1);
-    assert_eq!(b.text("s-hist-toggle"), "手写 SQL 不画分布图");
-    assert!(disabled(&mut b, "s-hist-toggle"));
+    assert!(!b.exists("#s-hist-toggle"), "SQL 模式不应显示分布图开关");
     assert_eq!(b.text("s-total"), "共 — 条");
 }
 
@@ -774,7 +854,7 @@ fn ui_search_histogram_timezone_change() {
 fn ui_search_histogram_cleared_on_invalid_time() {
     let (_fx, s) = start(&[FUTURE]);
     let mut b = drawn(&s);
-    b.fill("s-start", "2026/10/30 8点");
+    invalidate_search_time(&mut b);
     b.click("s-query");
     assert!(
         b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -811,6 +891,8 @@ fn ui_search_count_429_total_only() {
         answer_error(b, is_count, 429, "too_many_queries")
     });
     screen(&mut b, "search");
+    search_stream(&mut b, "app");
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
     b.click("s-hist-toggle");
     search_stream(&mut b, "app");
     let c = wait_requests(&mut b, 1, is_count).remove(0);
@@ -945,8 +1027,7 @@ fn ui_search_system_time_columns() {
     assert!(ok, "对账表没有 default/app 的行");
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
-    b.fill("s-start", &utc_text(wide.0));
-    b.fill("s-end", &utc_text(wide.1));
+    search_range(&mut b, &utc_text(wide.0), &utc_text(wide.1));
     let time = |v: &str| {
         v.len() == 26
             && v.bytes().enumerate().all(|(i, c)| match i {
@@ -1672,7 +1753,11 @@ fn ui_search_input_hints_field_table() {
     b.fill("s-cond-input", "lev");
     let h = hints(&mut b);
     assert!(h.contains(&"level".into()), "{h:?}");
-    assert_eq!(h.last().map(String::as_str), Some("按全文检索"), "{h:?}");
+    assert_eq!(
+        h.last().map(String::as_str),
+        Some("添加全文条件：lev"),
+        "{h:?}"
+    );
 }
 
 #[test]
@@ -1685,7 +1770,7 @@ fn ui_search_input_hints_values() {
         h.contains(&"error".into()) && h.contains(&"warn".into()),
         "{h:?}"
     );
-    assert_eq!(h.last().map(String::as_str), Some("按全文检索"), "{h:?}");
+    assert!(!h.iter().any(|text| text.contains("全文")), "{h:?}");
 }
 
 #[test]
@@ -1866,9 +1951,18 @@ fn ui_search_detail_add_sql_cursor() {
     b.fill("s-sql", text);
     let at = text.find("WHERE ").unwrap() + "WHERE ".len();
     b.eval(&format!(
-        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({at}, {at}); \
-         e.dispatchEvent(new Event('select', {{bubbles: true}})); }})()"
+        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({}, {}); }})()",
+        text.len(), text.len()
     ));
+    // 用真实键盘事件移动光标；人工派发原生 select 不等于 React 的合成 onSelect。
+    for _ in at..text.len() {
+        for kind in ["keyDown", "keyUp"] {
+            b.call(
+                "Input.dispatchKeyEvent",
+                json!({"type": kind, "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37}),
+            );
+        }
+    }
     open_detail(&mut b, 1);
     detail_add(&mut b, "host", "add-eq");
     assert_eq!(
@@ -2381,16 +2475,16 @@ fn ui_search_history_restore_no_request() {
     b.fill("s-stream", "app");
     add(&mut b, "timeout");
     let week = (7 * 24 * HOUR_US).to_string();
-    b.select("s-quick", &week);
+    search_quick(&mut b, week.parse().unwrap());
     query_done(&mut b);
     b.fill("s-stream", "web");
     remove_chip(&mut b, "全文 timeout");
-    b.select("s-quick", &HOUR_US.to_string());
+    search_quick(&mut b, HOUR_US);
     query_done(&mut b);
     let n = search_posts(&mut b);
     pick_history(&mut b, 1);
     assert!(b.wait_until("document.getElementById('s-stream').value === 'app'", WAIT));
-    assert_eq!(b.value("s-quick"), week);
+    assert!(b.text("s-time-trigger").contains("7 天"));
     assert_eq!(chips(&mut b), vec![("全文 timeout".into(), true)]);
     assert!(b.exists("#s-staged"), "恢复后没有未生效的改动的标记");
     std::thread::sleep(Duration::from_millis(500));

@@ -1,0 +1,10 @@
+.ui-checkbox {
+  padding: 0;
+  background: revert;
+  border: revert;
+  border-radius: revert;
+}
+
+.ui-checkbox:disabled {
+  opacity: 0.5;
+}

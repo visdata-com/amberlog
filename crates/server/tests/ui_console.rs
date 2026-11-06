@@ -21,6 +21,13 @@ const T: i64 = 1_792_137_600_000_000;
 
 const CANCELLED: &str = "已取消。服务端可能仍在执行这次查询，马上重查可能提示服务繁忙";
 
+/// 仅允许当前 HTML 声明的嵌入资源，不能放行任意 /ui/assets/* 请求。
+fn page_assets(page: &str) -> Vec<&str> {
+    page.split('"')
+        .filter(|part| part.starts_with("/ui/assets/"))
+        .collect()
+}
+
 fn around_now() -> (i64, i64) {
     let now = now_us();
     (now - HOUR_US, now + 1_000_000)
@@ -30,8 +37,7 @@ fn around_now() -> (i64, i64) {
 fn fill_search(b: &mut Browser, stream: &str, start: &str, end: &str) {
     screen(b, "search");
     b.fill("s-stream", stream);
-    b.fill("s-start", start);
-    b.fill("s-end", end);
+    search_range(b, start, end);
 }
 
 /// 检索请求的 `(start_time, end_time)`。
@@ -76,10 +82,16 @@ fn ui_console_page_requests() {
     let r = s.get("/ui");
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
-    // 请求记录记不到 Worker 发出的请求：页面全文不得用到这几种发请求的手段
+    // 请求记录记不到 Worker 发出的请求：页面与 JS 全文不得用到这些手段。
     let page = r.text();
+    let assets = page_assets(&page);
+    assert!(assets.iter().any(|path| path.ends_with(".js")));
+    assert!(assets.iter().any(|path| path.ends_with(".css")));
     for word in ["WebSocket", "Worker", "sendBeacon", "EventSource"] {
         assert!(!page.contains(word), "页面含 {word}");
+        for path in &assets {
+            assert!(!s.get(path).text().contains(word), "{path} 含 {word}");
+        }
     }
     let mut b = open(&s);
     std::thread::sleep(Duration::from_secs(5));
@@ -87,14 +99,16 @@ fn ui_console_page_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            r.path() != "/ui" && !(r.method == "POST" && r.path() == "/api/default/_search")
+            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
+                && !(r.method == "POST" && r.path() == "/api/default/_search")
         })
         .map(|r| format!("{} {}", r.method, r.url))
         .collect();
     assert_eq!(others, Vec::<String>::new());
 }
 
-/// 查询串不影响结果，`/ui/` 等其他路径为未注册路径（REQ-AMB-UI-CONSOLE-PAGE；后者按 REQ-AMB-ERR-ENVELOPE，不对应块场景）。
+/// 查询串不影响入口；`/ui` 下的页面路径交给前端，文件和源码路径仍按
+/// REQ-AMB-ERR-ENVELOPE 返回 404。
 #[test]
 fn ui_console_page_path_exact() {
     let (_fx, s) = start(&[]);
@@ -102,14 +116,111 @@ fn ui_console_page_path_exact() {
     let q = s.get("/ui?x=1#y");
     assert_eq!(q.status, 200);
     assert_eq!(q.text(), page);
-    for p in ["/ui/", "/ui/index.html", "/ui/assets/app.js"] {
+    for path in [
+        "/ui/",
+        "/ui/search",
+        "/ui/ledger",
+        "/ui/reconciliation",
+        "/ui/settings",
+        "/ui/settings/profile?tab=appearance",
+    ] {
+        let r = s.get(path);
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.text(), page, "{path}");
+    }
+    for p in [
+        "/ui/index.html",
+        "/ui/assets/app.js",
+        "/ui/assets/missing",
+        "/ui/src/main.tsx",
+        "/ui/.vite/manifest.json",
+        "/uix/settings",
+    ] {
         assert_eq!(s.get(p).status, 404, "{p}");
+    }
+}
+
+#[test]
+fn ui_console_routes_open_and_reload() {
+    let (_fx, s) = start(&[]);
+    let mut b = Browser::launch();
+    for (path, screen) in [
+        ("/ui/", "search"),
+        ("/ui/search", "search"),
+        ("/ui/ledger", "ledger"),
+        ("/ui/reconciliation", "recon"),
+    ] {
+        b.open(&format!("http://{}{path}", s.addr));
+        let visible = format!(
+            "document.getElementById('{screen}') !== null && !document.getElementById('{screen}').hidden"
+        );
+        assert!(b.wait_until(&visible, WAIT), "直接访问 {path}");
+        assert_eq!(shown_screen(&mut b), screen);
+        b.eval("window.__beforeReload = true");
+        b.call("Page.reload", json!({"ignoreCache": true}));
+        assert!(
+            b.wait_until(
+                &format!(
+                    "document.readyState === 'complete' && window.__beforeReload !== true && ({visible})"
+                ),
+                WAIT
+            ),
+            "刷新 {path}"
+        );
+        assert_eq!(shown_screen(&mut b), screen);
+    }
+}
+
+#[test]
+fn ui_console_route_navigation_updates_history_without_queries() {
+    let (_fx, s) = start(&[]);
+    let mut b = open(&s);
+    let requests = data_requests(&mut b).len();
+    screen(&mut b, "ledger");
+    assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
+    screen(&mut b, "recon");
+    assert!(b.wait_until("location.pathname === '/ui/reconciliation'", WAIT));
+    b.eval("history.back()");
+    assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
+    assert_eq!(shown_screen(&mut b), "ledger");
+    b.eval("history.back()");
+    assert!(b.wait_until("location.pathname === '/ui'", WAIT));
+    assert_eq!(shown_screen(&mut b), "search");
+    assert_eq!(data_requests(&mut b).len(), requests, "切页触发了查询");
+}
+
+#[test]
+fn ui_console_unknown_page_is_handled_by_frontend() {
+    let (_fx, s) = start(&[]);
+    let mut b = Browser::launch();
+    for path in ["/ui/settings", "/ui/settings/profile?tab=appearance"] {
+        let r = s.get(path);
+        assert_eq!(r.status, 200, "{path} 未返回应用入口");
+        b.open(&format!("http://{}{path}", s.addr));
+        let not_found = "document.querySelector('[data-page=\"not-found\"]') !== null && document.getElementById('not-found-title')?.textContent === '页面不存在'";
+        assert!(b.wait_until(not_found, WAIT), "{path} 未由前端处理");
+        b.eval("window.__beforeReload = true");
+        b.call("Page.reload", json!({"ignoreCache": true}));
+        assert!(
+            b.wait_until(
+                &format!(
+                    "document.readyState === 'complete' && window.__beforeReload !== true && ({not_found})"
+                ),
+                WAIT
+            ),
+            "刷新 {path} 后未由前端处理"
+        );
+        b.click("not-found-home");
+        assert!(b.wait_until("location.pathname === '/ui/'", WAIT));
+        assert_eq!(shown_screen(&mut b), "search");
     }
 }
 
 #[test]
 fn ui_console_no_external_requests() {
     let (_fx, s) = start(&[]);
+    let page = s.get("/ui").text();
+    let assets = page_assets(&page);
     ingest_ok(&s, "app", r#"[{"msg":"hello"},{"msg":"world"}]"#);
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
@@ -130,7 +241,7 @@ fn ui_console_no_external_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            r.path() != "/ui"
+            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
                 && !(r.method == "POST" && r.path() == "/api/default/_search")
                 && !(r.method == "GET" && r.path() == "/api/default/app/_fields")
         })
@@ -159,9 +270,8 @@ fn ui_console_switch_keeps_state() {
     search_stream(&mut b, "app");
     let snapshot = |b: &mut Browser| {
         b.eval(
-            "[document.getElementById('s-stream').value, document.getElementById('s-start').value, \
-              document.getElementById('s-end').value, document.getElementById('s-quick').value, \
-              document.getElementById('s-result').innerHTML]",
+            "[document.getElementById('s-stream').value, document.getElementById('s-time-trigger').textContent, \
+              document.getElementById('s-time-description').textContent, document.getElementById('s-result').innerHTML]",
         )
     };
     let before = snapshot(&mut b);
@@ -278,7 +388,10 @@ fn ui_console_token_401_marked() {
 fn ui_console_timezone_choices() {
     let (_fx, s) = start(&[]);
     let mut b = open(&s);
-    let v = b.eval("[...document.getElementById('tz').options].map(o => o.value)");
+    b.click("tz");
+    let v = b.eval(
+        "[...document.querySelectorAll('#tz-listbox [role=\"option\"]')].map(o => o.dataset.value)",
+    );
     let choices: Vec<String> = serde_json::from_value(v).unwrap();
     for z in ["UTC", "Asia/Shanghai", "America/New_York"] {
         assert!(
@@ -404,7 +517,7 @@ fn ui_console_time_input_zone() {
     let (_fx, s) = start(&[]);
     let mut b = open_with(&s, |b| b.set_timezone("Asia/Shanghai"));
     fill_token(&mut b, TOKEN);
-    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16T09:00:00Z");
+    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16 17:00");
     b.click("s-query");
     let r = wait_requests(&mut b, 1, is_search).remove(0);
     assert_eq!(range_of(&r), (1_792_137_600_000_000, 1_792_141_200_000_000));
@@ -427,9 +540,9 @@ fn ui_console_time_input_invalid() {
     let mut b = open(&s);
     // 每次在新开的标签页里填写，结果区原本为空，「时刻格式无效」是这一次显示的
     for (i, (start, end)) in [
-        ("2026/10/16 8点", ""),
-        ("2026-10-16 08:00", ""),
-        ("2026-02-30 10:00", "2026-03-01 10:00"),
+        ("2026-10-16 25:00", "2026-10-16 09:00"),
+        ("2026-10-16 08:00", "2026-10-16 "),
+        ("2026-10-16 10:00", "2026-10-16 09:00"),
     ]
     .into_iter()
     .enumerate()
@@ -439,9 +552,8 @@ fn ui_console_time_input_invalid() {
         }
         screen(&mut b, "search");
         b.fill("s-stream", "app");
-        assert_eq!(b.text("s-result").trim(), "");
-        b.fill("s-start", start);
-        b.fill("s-end", end);
+        assert!(b.exists("#s-result .result-state[data-kind=idle]"));
+        search_range(&mut b, start, end);
         b.click("s-query");
         assert!(
             b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -460,7 +572,7 @@ fn ui_console_quick_range() {
     fill_token(&mut b, TOKEN);
     screen(&mut b, "search");
     b.fill("s-stream", "app");
-    b.select("s-quick", "900000000");
+    search_quick(&mut b, 900_000_000);
     std::thread::sleep(Duration::from_millis(1100));
     let t0 = now_us();
     b.click("s-query");
@@ -470,8 +582,7 @@ fn ui_console_quick_range() {
     // 浏览器取的时刻精确到毫秒
     assert!(end >= t0 - 1000 && end <= t1, "{t0} ≤ {end} ≤ {t1}");
     assert_eq!(end - start, 900_000_000);
-    assert_eq!(b.value("s-start"), utc_text(start));
-    assert_eq!(b.value("s-end"), utc_text(end));
+    assert!(b.text("s-time-trigger").contains("15 分钟"));
 }
 
 #[test]
@@ -483,8 +594,10 @@ fn ui_console_time_range_kept_on_tz_change() {
     b.click("s-query");
     wait_requests(&mut b, 1, is_search);
     b.select("tz", "UTC");
-    assert_eq!(b.value("s-start"), "2026-10-16 08:00:00.000000");
-    assert_eq!(b.value("s-end"), "2026-10-16 09:00:00.000000");
+    assert!(
+        b.text("s-time-description")
+            .contains("2026-10-16 08:00:00 → 2026-10-16 09:00:00")
+    );
     b.click("s-query");
     let rs = wait_requests(&mut b, 2, is_search);
     for r in &rs {
@@ -569,7 +682,9 @@ fn ui_console_empty_result() {
     ingest_at(&s, "app", now_us() - 3 * HOUR_US, json!({"msg": "old"}));
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
-    assert_eq!(b.text("s-result").trim(), "无结果");
+    assert!(b.text("s-result").contains("未找到匹配结果"));
+    assert!(b.text("s-result").contains("扩大时间范围"));
+    assert!(!b.exists("#s-result table"));
 }
 
 #[test]

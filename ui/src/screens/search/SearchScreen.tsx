@@ -1,7 +1,9 @@
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
-import { useEffect, useRef, useState } from "preact/hooks";
+import { Button } from "../../components/ui/Button.tsx";
+import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
+import { useEffect, useRef, useState } from "react";
 import { Num, intOf, rawText, toJsonText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US, nowUs } from "../../lib/time.ts";
@@ -13,9 +15,11 @@ import { shownView, useResultRequest, type ResultRequest } from "../../shell/req
 import { ResultArea } from "../../shell/ResultArea.tsx";
 import { onTokenConfirmed, settings } from "../../shell/settings.ts";
 import { Time } from "../../shell/Time.tsx";
-import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { DatasetInput } from "../../shell/DatasetInput.tsx";
 import { type Bar, bars, countsByStart, pageRows, total } from "./chart.ts";
 import { type Chip, CondBox } from "./CondBox.tsx";
+import { conditionDraft } from "./conditionInput.ts";
 import { type Field, isStreamName } from "./fields.ts";
 import { FieldsBar, RECORD_GROUP, type ValueRow, type Values } from "./FieldsBar.tsx";
 import {
@@ -171,6 +175,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const [stream, setStream] = useState("");
   const [mode, setMode] = useState<"cond" | "sql">("cond");
   const [chips, setChips] = useState<Chip[]>([]);
+  const [conditionInput, setConditionInput] = useState("");
+  const [conditionError, setConditionError] = useState<string | null>(null);
   const nextId = useRef(1);
   const [sql, setSql] = useState("");
   /** 切到 SQL 模式时填入的文本（TO-COND 据此判断改过没有）。 */
@@ -340,20 +346,41 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const utf8 = (f: string): boolean => utf8Names.has(f);
 
   const conds = chips.map((c) => c.cond);
+  const view = shownView(req.view);
+  const ok = view.kind === "ok" ? view : null;
+  const hits: readonly Hit[] = ok?.hits ?? [];
+  const conditionColumns = table !== undefined ? table.map((f) => f.name) : columnsOf(hits);
   const condPending = chips.length !== appliedIds.size || chips.some((c) => !appliedIds.has(c.id));
   // SQL 模式：上一次在 SQL 模式下检索过时比 SQL 文本；否则切过来时的未生效条件仍算，另加对 SQL 文本的修改
   const pending =
     mode === "cond"
-      ? condPending
+      ? condPending || conditionInput.trim() !== ""
       : launched?.mode === "sql"
         ? sql !== launched.query.sql
         : condPending || sql !== sqlBase;
   const blocked = mode === "cond" && fulltextBlocked(conds, range.length());
 
+  /** 提交尚未回车的输入，返回同一次操作要使用的完整条件，避免读到旧 state。 */
+  const prepareConditions = (): Chip[] | null => {
+    const draft = conditionDraft(conditionInput, conditionColumns);
+    if (draft.error !== null) {
+      setConditionError(draft.error);
+      document.getElementById("s-cond-input")?.focus();
+      return null;
+    }
+    setConditionInput("");
+    setConditionError(null);
+    return draft.condition === null ? chips : addCondition(draft.condition);
+  };
+
   /** 发起检索（REQ-AMB-UI-SEARCH-QUERY）：点「查询」、点柱缩放、「关闭并查询」。 */
   const launch = (): void => {
     // 429 倒计时中、或全文范围超限时「查询」不可用；点柱缩放、「关闭并查询」同样不发
-    if (req.queryDisabled || (mode === "cond" && fulltextBlocked(conds, range.length()))) return;
+    if (req.queryDisabled) return;
+    const queryChips = mode === "cond" ? prepareConditions() : [];
+    if (queryChips === null) return;
+    const queryConditions = queryChips.map((c) => c.cond);
+    if (mode === "cond" && fulltextBlocked(queryConditions, range.length())) return;
     const r = range.resolve();
     if (r === null) {
       // TIME-INPUT-INVALID 不发请求；分布图清空、总条数为「—」（HIST-CLEAR）
@@ -365,21 +392,21 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     const [start, end] = r;
     // 发起检索结束上下文结果的显示（CONTEXT-BACK）；在途的上下文请求由 req.result 中止（CONTEXT-STALE）
     setCtx(null);
-    const where = mode === "cond" ? whereClause(conds, utf8) : "";
+    const where = mode === "cond" ? whereClause(queryConditions, utf8) : "";
     const text = mode === "cond" ? selectSql(stream, where, ascending) : sql;
     const query: Query = { sql: text, start_time: start, end_time: end, size: SIZE, from: 0 };
-    const l: Launched = { mode, query, chips: mode === "cond" ? chips : [], stream, where };
+    const l: Launched = { mode, query, chips: queryChips, stream, where };
     resetValues();
     setLaunched(l);
     if (mode === "cond") {
-      setAppliedIds(new Set(chips.map((c) => c.id)));
-      appliedChips.current = chips;
+      setAppliedIds(new Set(queryChips.map((c) => c.id)));
+      appliedChips.current = queryChips;
     }
     const m = range.model;
     const at = nowUs();
     const kept = m.quick !== null ? { quick: m.quick } : { start, end };
     addHistory(
-      mode === "cond" ? { mode, stream, range: kept, conds: [...conds], at } : { mode, range: kept, sql: text, at },
+      mode === "cond" ? { mode, stream, range: kept, conds: queryConditions, at } : { mode, range: kept, sql: text, at },
     );
     setSqlNote(mode === "sql" && mentionsFulltext(text) && end - start > FULLTEXT_LIMIT_US);
     runResult(l, query);
@@ -452,14 +479,16 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     runResult(shown.launched, q);
   };
 
-  const addCondition = (c: Condition): void => {
+  const addCondition = (c: Condition): Chip[] => {
     const length = range.length();
     if (narrowOnAdd(conds, c, length)) {
       const m = range.model;
       if (m.quick !== null) range.setQuick(FULLTEXT_NARROW_US);
       else if (m.end !== null) range.setRange(m.end - FULLTEXT_NARROW_US, m.end);
     }
-    setChips([...chips, { id: nextId.current++, cond: c }]);
+    const next = [...chips, { id: nextId.current++, cond: c }];
+    setChips(next);
+    return next;
   };
 
   /**
@@ -467,6 +496,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
    * 相同的条件沿用其编号，算已生效。
    */
   const restore = (it: HistoryItem): void => {
+    setConditionInput("");
+    setConditionError(null);
     if ("quick" in it.range) range.setQuick(it.range.quick);
     else range.setRange(it.range.start, it.range.end);
     setConfirming(false);
@@ -494,7 +525,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const switchMode = (m: "cond" | "sql"): void => {
     if (m === mode) return;
     if (m === "sql") {
-      const text = searchSql(stream, conds, ascending, utf8);
+      const next = prepareConditions();
+      if (next === null) return;
+      const text = searchSql(stream, next.map((c) => c.cond), ascending, utf8);
       setSql(text);
       setSqlBase(text);
       cursor.current = null;
@@ -507,10 +540,6 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     }
   };
 
-  const view = shownView(req.view);
-  const ok = view.kind === "ok" ? view : null;
-  const hits: readonly Hit[] = ok?.hits ?? [];
-  const columns = columnsOf(hits);
   const from = shown?.query.from ?? 0;
   const timeKeys = timeColumns(shown?.query.sql ?? "");
   const terms =
@@ -559,9 +588,14 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     }
     saveCollapsed(!collapsed);
     setCollapsed(!collapsed);
+    // 收起期间的新查询只请求总条数；重新展开时补取该次查询的分布。
+    if (collapsed && chart.kind === "none" && histInput !== null) void sendHist(histInput);
   };
+  const emptyChart = chart.kind === "bars" && chart.bars.every((b) => b.n === "0");
+  const showHistogramToggle =
+    mode === "cond" && histInput !== null && !emptyChart && (collapsed || chart.kind !== "none");
   const toggleText =
-    mode === "sql" ? "手写 SQL 不画分布图" : chart.kind === "busy" ? "重画分布图" : collapsed ? "显示分布图" : "收起分布图";
+    chart.kind === "busy" ? "重画分布图" : collapsed ? "显示分布图" : "收起分布图";
 
   const zoom = (a: number, b: number): void => {
     if (chart.kind !== "bars") return;
@@ -578,57 +612,65 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
       "耗时 " + rawText(body.get("took")) + " ms",
       "扫描 " + rawText(body.get("scan_files")) + " 个文件",
       rawText(body.get("scan_bytes")) + " 字节",
-      rawText(body.get("scan_records")) + " 条记录",
+      "实际读取 " + rawText(body.get("scan_records")) + " 条记录",
     ];
     return (rows === null ? parts : [rows, ...parts]).join(" · ");
   };
 
   return (
-    <section id="search" class="screen" hidden={hidden}>
-      <div class="bar">
-        <input
-          id="s-stream"
-          list="s-streams"
-          autocomplete="off"
-          aria-label="数据集"
-          value={stream}
-          onInput={(e) => {
-            const v = e.currentTarget.value;
-            changeStream(v);
-            // 从候选中选定（不是逐字输入）即确定数据集
-            const kind = (e as InputEvent).inputType;
-            if (kind === undefined || kind === "insertReplacementText") determine(v, true);
-          }}
-          onBlur={(e) => determine(e.currentTarget.value, true)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") determine(e.currentTarget.value, true);
-          }}
-        />
-        <datalist id="s-streams">
-          {list.map((d) => (
-            <option value={streamOf(d)} />
-          ))}
-        </datalist>
-        <TimeRangeInputs range={range} prefix="s" />
-        {fieldsCollapsed && (
-          <button
-            type="button"
-            id="s-fields-show"
-            onClick={() => {
-              saveFieldsCollapsed(false);
-              setFieldsCollapsed(false);
-            }}
-          >
-            » 字段
-          </button>
-        )}
-      </div>
-      <div class="bar">
+    <section id="search" className="screen" hidden={hidden}>
+      <div className="query-panel" role="region" aria-label="查询条件">
         <CondBox
+          toolbar={
+            <>
+              <DatasetInput
+                id="s-stream"
+                listId="s-streams"
+                placeholder="选择数据集"
+                value={stream}
+                options={list.map(streamOf)}
+                onInput={(value, inputType) => {
+                  changeStream(value);
+                  // 从候选中选定（不是逐字输入）即确定数据集
+                  if (inputType === undefined || inputType === "insertReplacementText") determine(value, true);
+                }}
+                onBlur={(value) => determine(value, true)}
+                onEnter={(value) => determine(value, true)}
+              />
+              <TimeRangePicker range={range} prefix="s" hidden={hidden} />
+              {fieldsCollapsed && (
+                <button
+                  type="button"
+                  id="s-fields-show"
+                  onClick={() => {
+                    saveFieldsCollapsed(false);
+                    setFieldsCollapsed(false);
+                  }}
+                >
+                  » 字段
+                </button>
+              )}
+              <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
+                {req.running ? "查询中" : "查询"}
+              </Button>
+              {pending && <span className="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
+              <HistoryPanel
+                sqlEdited={mode === "sql" && sql !== (launched?.mode === "sql" ? launched.query.sql : sqlBase)}
+                onRestore={restore}
+              />
+            </>
+          }
           mode={mode}
           chips={chips}
           applied={appliedIds}
-          columns={table !== undefined ? table.map((f) => f.name) : columns}
+          columns={conditionColumns}
+          input={conditionInput}
+          error={conditionError}
+          onInput={(text) => {
+            setConditionInput(text);
+            setConditionError(null);
+          }}
+          onError={setConditionError}
           valuesOf={(f) => {
             const v = values.get(f);
             return v?.kind === "ok" ? v.rows : null;
@@ -653,185 +695,204 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             }
           }}
         />
-        <button type="button" id="s-query" class="primary" disabled={req.queryDisabled || blocked} onClick={launch}>
-          {req.running ? "查询中" : "查询"}
-        </button>
-        {pending && <span class="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
-        <HistoryPanel
-          sqlEdited={mode === "sql" && sql !== (launched?.mode === "sql" ? launched.query.sql : sqlBase)}
-          onRestore={restore}
-        />
+        {blocked && (
+          <p className="hint" id="s-limit">
+            {FULLTEXT_LIMIT_TEXT}
+          </p>
+        )}
+        {sqlNote && (
+          <p className="hint" id="s-sql-note">
+            {SQL_FULLTEXT_NOTE}
+          </p>
+        )}
       </div>
-      {blocked && (
-        <p class="hint" id="s-limit">
-          {FULLTEXT_LIMIT_TEXT}
-        </p>
-      )}
-      {sqlNote && (
-        <p class="hint" id="s-sql-note">
-          {SQL_FULLTEXT_NOTE}
-        </p>
-      )}
-      <div class="results">
-      {!fieldsCollapsed && (
-        <FieldsBar
-          fields={table ?? null}
-          error={current === null ? null : (fieldErrors.get(current) ?? null)}
-          open={openGroups}
-          onToggleGroup={(k) => {
-            const n = new Set(openGroups);
-            if (n.has(k)) n.delete(k);
-            else n.add(k);
-            setOpenGroups(n);
-          }}
-          values={values}
-          canExpand={canExpand}
-          onToggleField={(f) => void toggleField(f)}
-          onAdd={(f, negate, v) => addCondition(detailCondition(f, negate, v))}
-          onCollapse={() => {
-            saveFieldsCollapsed(true);
-            setFieldsCollapsed(true);
-          }}
-        />
-      )}
-      <div class="card">
-        <div class="info">
-          <span id="s-total">{"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}</span>
-          {ok !== null && ctx === null && <span id="s-info">{info(ok.body)}</span>}
-          <span class="spacer" />
-          <button type="button" id="s-hist-toggle" disabled={mode === "sql"} onClick={toggle}>
-            {toggleText}
-          </button>
-          {hiddenCols.size > 0 && (
-            <span class="restore" id="s-hidden-cols">
-              {[...hiddenCols].map((c) => (
-                <button
-                  type="button"
-                  onClick={() => setHiddenCols(new Set([...hiddenCols].filter((x) => x !== c)))}
-                >
-                  {"+ " + c}
-                </button>
-              ))}
+      <div className="results">
+        {!fieldsCollapsed && (
+          <FieldsBar
+            fields={table ?? null}
+            error={current === null ? null : (fieldErrors.get(current) ?? null)}
+            open={openGroups}
+            onToggleGroup={(k) => {
+              const n = new Set(openGroups);
+              if (n.has(k)) n.delete(k);
+              else n.add(k);
+              setOpenGroups(n);
+            }}
+            values={values}
+            canExpand={canExpand}
+            onToggleField={(f) => void toggleField(f)}
+            onAdd={(f, negate, v) => addCondition(detailCondition(f, negate, v))}
+            onCollapse={() => {
+              saveFieldsCollapsed(true);
+              setFieldsCollapsed(true);
+            }}
+          />
+        )}
+        <div className="card">
+          <div className="info">
+            {view.kind === "idle" && <span className="result-heading">检索结果</span>}
+            <span id="s-total" hidden={view.kind === "idle"}>
+              {"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}
             </span>
-          )}
-          <button
-            type="button"
-            id="s-prev"
-            disabled={shown === null || ok === null || ctx !== null || from === 0}
-            onClick={() => shown !== null && resend({ ...shown.query, from: Math.max(0, from - SIZE) })}
-          >
-            上一页
-          </button>
-          <button
-            type="button"
-            id="s-next"
-            disabled={shown === null || ok === null || ctx !== null || hits.length < SIZE}
-            onClick={() => shown !== null && resend({ ...shown.query, from: from + SIZE })}
-          >
-            下一页
-          </button>
-        </div>
-        {mode === "cond" && !collapsed && chart.kind !== "busy" && (
-          <div class="hist-area" id="s-hist">
-            {chart.kind === "bars" && <Histogram name={chart.name} bars={chart.bars} onZoom={zoom} />}
-            {chart.kind === "error" && (
-              <div class="message">
-                {chart.lines.map((l) => (
-                  <p>{l}</p>
+            {ok !== null && ctx === null && (
+              <span
+                id="s-info"
+                title="实际读取量是查询引擎扫描的数据文件记录数，不代表最终命中的记录数"
+              >
+                {info(ok.body)}
+              </span>
+            )}
+            <span className="spacer" />
+            {showHistogramToggle && (
+              <button type="button" id="s-hist-toggle" onClick={toggle}>
+                {toggleText}
+              </button>
+            )}
+            {hiddenCols.size > 0 && (
+              <span className="restore" id="s-hidden-cols">
+                {[...hiddenCols].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setHiddenCols(new Set([...hiddenCols].filter((x) => x !== c)))}
+                  >
+                    {"+ " + c}
+                  </button>
                 ))}
-              </div>
+              </span>
             )}
-          </div>
-        )}
-        {ctx !== null && (
-          <div class="context-bar" id="s-context">
-            <Time us={ctx.t} />
-            <button
+            <Button
               type="button"
-              id="s-context-back"
-              onClick={() => {
-                // 不发请求，结果表恢复为最近一次检索请求的结果
-                setCtx(null);
-                setViewed(-1);
-              }}
+              id="s-prev"
+              hidden={view.kind === "idle"}
+              disabled={shown === null || ok === null || ctx !== null || from === 0}
+              onClick={() => shown !== null && resend({ ...shown.query, from: Math.max(0, from - SIZE) })}
             >
-              返回检索结果
-            </button>
-            {ctx.center === null && (
-              <span class="hint" id="s-context-center-missing">
-                {CENTER_MISSING}
-              </span>
-            )}
-            {ctx.few && (
-              <span class="hint" id="s-context-few">
-                {CONTEXT_FEW}
-              </span>
-            )}
+              上一页
+            </Button>
+            <Button
+              type="button"
+              id="s-next"
+              hidden={view.kind === "idle"}
+              disabled={shown === null || ok === null || ctx !== null || hits.length < SIZE}
+              onClick={() => shown !== null && resend({ ...shown.query, from: from + SIZE })}
+            >
+              下一页
+            </Button>
           </div>
-        )}
-        <ResultArea
-          req={req}
-          prefix="s"
-          plain={ctx !== null}
-          render={(rows) => (
-            <Table
-              hits={ctx !== null ? ctx.rows : rows}
-              timeKeys={timeKeys}
-              terms={terms}
-              hidden={hiddenCols}
-              ascending={ctx === null && mode === "cond" && shown?.launched.mode === "cond" ? ascending : null}
-              viewed={viewed}
-              center={ctx?.center ?? -1}
-              onSort={() => {
-                if (shown === null || shown.launched.mode !== "cond") return;
-                const l = shown.launched;
-                const asc = !ascending;
-                setAscending(asc);
-                resend({ ...shown.query, sql: selectSql(l.stream, l.where, asc), from: 0 });
-              }}
-              onHide={(c) => setHiddenCols(new Set([...hiddenCols, c]))}
-              onOpen={(i) => {
+          {mode === "cond" && !collapsed && !emptyChart && (chart.kind === "bars" || chart.kind === "error") && (
+            <div className="hist-area" id="s-hist">
+              {chart.kind === "bars" && (
+                <Histogram name={chart.name} bars={chart.bars} interval={chart.us} range={chart.range} onZoom={zoom} />
+              )}
+              {chart.kind === "error" && (
+                <div className="message">
+                  {chart.lines.map((l, i) => (
+                    <p key={i}>{l}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {ctx !== null && (
+            <div className="context-bar" id="s-context">
+              <Time us={ctx.t} />
+              <button
+                type="button"
+                id="s-context-back"
+                onClick={() => {
+                  // 不发请求，结果表恢复为最近一次检索请求的结果
+                  setCtx(null);
+                  setViewed(-1);
+                }}
+              >
+                返回检索结果
+              </button>
+              {ctx.center === null && (
+                <span className="hint" id="s-context-center-missing">
+                  {CENTER_MISSING}
+                </span>
+              )}
+              {ctx.few && (
+                <span className="hint" id="s-context-few">
+                  {CONTEXT_FEW}
+                </span>
+              )}
+            </div>
+          )}
+          <ResultArea
+            req={req}
+            prefix="s"
+            initial={
+              mode === "sql"
+                ? { title: "使用 SQL 检索日志", description: "输入 SQL 并选择时间范围，点击「查询」查看结果。" }
+                : { title: "开始检索日志", description: "选择数据集和时间范围，按需添加筛选条件，点击「查询」查看日志。" }
+            }
+            emptyDescription={
+              from > 0
+                ? "当前页没有更多记录，可返回上一页查看已有结果。"
+                : "可以扩大时间范围、减少筛选条件，或确认所选数据集中已有日志。"
+            }
+            plain={ctx !== null}
+            render={(rows) => (
+              <Table
+                hits={ctx !== null ? ctx.rows : rows}
+                timeKeys={timeKeys}
+                terms={terms}
+                hidden={hiddenCols}
+                ascending={ctx === null && mode === "cond" && shown?.launched.mode === "cond" ? ascending : null}
+                viewed={viewed}
+                center={ctx?.center ?? -1}
+                onSort={() => {
+                  if (shown === null || shown.launched.mode !== "cond") return;
+                  const l = shown.launched;
+                  const asc = !ascending;
+                  setAscending(asc);
+                  resend({ ...shown.query, sql: selectSql(l.stream, l.where, asc), from: 0 });
+                }}
+                onHide={(c) => setHiddenCols(new Set([...hiddenCols, c]))}
+                onOpen={(i) => {
+                  setDetail(i);
+                  setViewed(i);
+                }}
+              />
+            )}
+          />
+          {detail !== null && detailHits.length > 0 && (
+            <Detail
+              hits={detailHits}
+              index={detail}
+              onIndex={(i) => {
                 setDetail(i);
                 setViewed(i);
               }}
+              timeKeys={timeKeys}
+              textTerms={terms}
+              onAdd={(c) => {
+                // 条件模式加入未生效的条件，SQL 模式插到光标处（DETAIL-ADD）；都不发请求
+                if (mode === "cond") {
+                  addCondition(c);
+                  return;
+                }
+                const r = insertAtCursor(sql, cursor.current, conditionSql(c));
+                setSql(r.sql);
+                cursor.current = r.cursor;
+              }}
+              pending={pending}
+              onClose={() => setDetail(null)}
+              onCloseAndQuery={() => {
+                setDetail(null);
+                launch();
+              }}
+              onContext={(() => {
+                const row = detailHits[detail];
+                const from = contextStream(row);
+                return row === undefined || from === null ? undefined : (keep: boolean) => void browse(row, from, keep);
+              })()}
+              edges={ctx !== null ? CONTEXT_EDGES : undefined}
             />
           )}
-        />
-        {detail !== null && detailHits.length > 0 && (
-          <Detail
-            hits={detailHits}
-            index={detail}
-            onIndex={(i) => {
-              setDetail(i);
-              setViewed(i);
-            }}
-            timeKeys={timeKeys}
-            textTerms={terms}
-            onAdd={(c) => {
-              // 条件模式加入未生效的条件，SQL 模式插到光标处（DETAIL-ADD）；都不发请求
-              if (mode === "cond") {
-                addCondition(c);
-                return;
-              }
-              const r = insertAtCursor(sql, cursor.current, conditionSql(c));
-              setSql(r.sql);
-              cursor.current = r.cursor;
-            }}
-            pending={pending}
-            onClose={() => setDetail(null)}
-            onCloseAndQuery={() => {
-              setDetail(null);
-              launch();
-            }}
-            onContext={(() => {
-              const row = detailHits[detail];
-              const from = contextStream(row);
-              return row === undefined || from === null ? undefined : (keep: boolean) => void browse(row, from, keep);
-            })()}
-            edges={ctx !== null ? CONTEXT_EDGES : undefined}
-          />
-        )}
-      </div>
+        </div>
       </div>
     </section>
   );
