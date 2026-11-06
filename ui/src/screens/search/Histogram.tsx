@@ -1,6 +1,6 @@
 // 分布图（REQ-AMB-UI-SEARCH-HIST-DRAW、HIST-TOOLTIP、HIST-ZOOM）：每个分桶一根柱，同色；点一根柱或拖选几根缩放。
 
-import { useRef, useState } from "preact/hooks";
+import { useRef, useState } from "react";
 import { useStore } from "../../lib/store.ts";
 import { formatLocal } from "../../lib/time.ts";
 import { settings } from "../../shell/settings.ts";
@@ -30,11 +30,12 @@ export function Histogram({ name, bars, onZoom }: HistogramProps) {
     }
   };
   return (
-    <div class="hist">
-      <div class="hbars" onPointerLeave={() => setDrag(null)}>
+    <div className="hist">
+      <div className="hbars" onPointerLeave={() => setDrag(null)}>
         {bars.map((b, i) => (
           <div
-            class={i >= lo && i <= hi ? "hbar picked" : "hbar"}
+            key={String(b.start)}
+            className={i >= lo && i <= hi ? "hbar picked" : "hbar"}
             data-start={String(b.start)}
             title={formatLocal(b.start, timezone) + "  " + b.n + " 条"}
             onPointerDown={(e) => {
@@ -49,11 +50,11 @@ export function Histogram({ name, bars, onZoom }: HistogramProps) {
               else onZoom(i, i);
             }}
           >
-            <div class="fill" style={{ height: hs[i]! * 100 + "%" }} />
+            <div className="fill" style={{ height: hs[i]! * 100 + "%" }} />
           </div>
         ))}
       </div>
-      <p class="per-bar" id="s-per-bar">{"每柱 " + name}</p>
+      <p className="per-bar" id="s-per-bar">{"每柱 " + name}</p>
     </div>
   );
 }

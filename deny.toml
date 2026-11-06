@@ -33,6 +33,8 @@ allow = [
     "PostgreSQL",
     # 公有领域贡献声明，放弃全部权利，无署名义务；可随二进制分发。
     "CC0-1.0",
+    # Mozilla 公共许可证；仅由前端构建工具使用，不进入 Amberlog 二进制。
+    "MPL-2.0",
 ]
 # 对许可文本的识别置信度：低于此值按「未能识别」处理，检查不通过（cargo-deny 默认值）。
 confidence-threshold = 0.93

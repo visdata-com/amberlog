@@ -1,8 +1,8 @@
 // 台账屏（REQ-AMB-UI-GOVERNANCE 台账屏一组）：查 `_ledger`，每个 hit 一行；列与取值的中文对照见 REQ-AMB-UI-GOVERNANCE，另有判定汇总、
 // 按时间戳上报的来源与数值格式；每行可跳到对账屏与检索屏；不提供编辑台账内容的控件（LEDGER-NO-EDIT）。
 
-import type { ComponentChildren } from "preact";
-import { useRef } from "preact/hooks";
+import type { ReactNode } from "react";
+import { useRef } from "react";
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
 import { DAY_US, HOUR_US } from "../../lib/time.ts";
 import { setDatasets, streamOf } from "../../shell/datasets.ts";
@@ -55,8 +55,8 @@ function TimeCell({ v }: { v: Json | undefined }) {
 
 /** 列：表头文字与该格的内容。 */
 interface Column {
-  label: ComponentChildren;
-  cell: (g: (k: string) => Json | undefined) => ComponentChildren;
+  label: ReactNode;
+  cell: (g: (k: string) => Json | undefined) => ReactNode;
 }
 
 const COLUMNS: readonly Column[] = [
@@ -92,13 +92,13 @@ const summaryCell = (g: (k: string) => Json | undefined, key: string): string =>
 
 function LedgerTable({ hits, onJump }: { hits: Hit[]; onJump: (dataset: string, to: "recon" | "search") => void }) {
   return (
-    <table class="ledger">
+    <table className="ledger">
       <thead>
-        <tr class="group">
-          {COLUMNS.map(() => (
-            <th />
+        <tr className="group">
+          {COLUMNS.map((_, i) => (
+            <th key={i} />
           ))}
-          <th colSpan={VERDICT_COLUMNS.length} class="verdicts">
+          <th colSpan={VERDICT_COLUMNS.length} className="verdicts">
             各判定的时间窗数
           </th>
           <th />
@@ -106,11 +106,11 @@ function LedgerTable({ hits, onJump }: { hits: Hit[]; onJump: (dataset: string, 
           <th />
         </tr>
         <tr>
-          {COLUMNS.map((c) => (
-            <th>{c.label}</th>
+          {COLUMNS.map((c, i) => (
+            <th key={i}>{c.label}</th>
           ))}
           {VERDICT_COLUMNS.map(([label]) => (
-            <th class="verdict">{label}</th>
+            <th key={label} className="verdict">{label}</th>
           ))}
           <th>上报中断的来源数</th>
           <th>按时间戳上报的来源</th>
@@ -123,16 +123,16 @@ function LedgerTable({ hits, onJump }: { hits: Hit[]; onJump: (dataset: string, 
           const dataset = g("dataset");
           const tsSources = g("ts_sources");
           return (
-            <tr>
-              {COLUMNS.map((c) => (
-                <td>{c.cell(g)}</td>
+            <tr key={rawText(dataset)}>
+              {COLUMNS.map((c, i) => (
+                <td key={i}>{c.cell(g)}</td>
               ))}
               {VERDICT_COLUMNS.map(([, k]) => (
-                <td class="verdict">{summaryCell(g, k)}</td>
+                <td key={k} className="verdict">{summaryCell(g, k)}</td>
               ))}
               <td>{summaryCell(g, "silent_sources")}</td>
               <td>{absent(tsSources) ? (g("reconciliation") === "unknown" ? "—" : "无") : rawText(tsSources)}</td>
-              <td class="jumps">
+              <td className="jumps">
                 {typeof dataset === "string" && (
                   <>
                     <button type="button" onClick={() => onJump(dataset, "recon")}>对账</button>
@@ -168,10 +168,10 @@ export function LedgerScreen({ hidden }: { hidden: boolean }) {
     else if (last.current !== null) entries.recon?.jump(dataset, last.current[0], last.current[1]);
   };
   return (
-    <section id="ledger" class="screen" hidden={hidden}>
-      <div class="bar">
+    <section id="ledger" className="screen" hidden={hidden}>
+      <div className="bar">
         <TimeRangeInputs range={range} prefix="l" />
-        <button type="button" id="l-query" class="primary" disabled={req.queryDisabled} onClick={() => void query()}>
+        <button type="button" id="l-query" className="primary" disabled={req.queryDisabled} onClick={() => void query()}>
           {req.running ? "查询中" : "查询"}
         </button>
       </div>

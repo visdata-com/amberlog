@@ -1,7 +1,7 @@
 // 单条详情（REQ-AMB-UI-SEARCH 单条详情一组）：只读检索屏已到手的本页结果，不发请求；字段页（分组、筛选、「加入」）与原始
 // JSON 页；↑↓ 换行，到本页两端停住、不自动翻页；Esc 关闭。浮层的根元素为 `#s-detail`。
 
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "react";
 import { intOf, rawText, type Hit, type Json } from "../../../lib/json.ts";
 import { useStore } from "../../../lib/store.ts";
 import { formatLocal, formatUtc } from "../../../lib/time.ts";
@@ -94,16 +94,16 @@ export function Detail(p: DetailProps) {
   };
 
   return (
-    <div id="s-detail" class="detail" role="dialog" aria-label="单条详情" tabIndex={-1}>
-      <header class="detail-head">
+    <div id="s-detail" className="detail" role="dialog" aria-label="单条详情" tabIndex={-1}>
+      <header className="detail-head">
         <span id="s-detail-pos">{"第 " + (p.index + 1) + " / " + n + " 行"}</span>
         {ts !== null && (
-          <span class="detail-time">
-            <span id="s-detail-time" class="time">{formatLocal(ts, timezone)}</span>
-            <span id="s-detail-utc" class="time">{formatUtc(ts)}</span>
+          <span className="detail-time">
+            <span id="s-detail-time" className="time">{formatLocal(ts, timezone)}</span>
+            <span id="s-detail-utc" className="time">{formatUtc(ts)}</span>
           </span>
         )}
-        <span class="spacer" />
+        <span className="spacer" />
         <button type="button" id="s-detail-prev" aria-label="上一条" onClick={() => move(-1)}>
           ↑
         </button>
@@ -111,7 +111,7 @@ export function Detail(p: DetailProps) {
           ↓
         </button>
         {p.pending && (
-          <button type="button" id="s-detail-close-query" class="primary" onClick={p.onCloseAndQuery}>
+          <button type="button" id="s-detail-close-query" className="primary" onClick={p.onCloseAndQuery}>
             关闭并查询
           </button>
         )}
@@ -120,11 +120,11 @@ export function Detail(p: DetailProps) {
         </button>
       </header>
       {p.onContext !== undefined && (
-        <div class="detail-context">
+        <div className="detail-context">
           <button type="button" id="s-detail-context" onClick={() => p.onContext?.(keepConditions)}>
             看前后记录
           </button>
-          <label class="field">
+          <label className="field">
             <input
               type="checkbox"
               id="s-detail-keep"
@@ -136,11 +136,11 @@ export function Detail(p: DetailProps) {
         </div>
       )}
       {edge !== null && (
-        <p class="hint" id="s-detail-edge" role="status">
+        <p className="hint" id="s-detail-edge" role="status">
           {edge}
         </p>
       )}
-      <div class="detail-tabs" role="tablist">
+      <div className="detail-tabs" role="tablist">
         <button
           type="button"
           role="tab"
@@ -162,8 +162,8 @@ export function Detail(p: DetailProps) {
         {page === "fields" && (
           <input
             id="s-detail-filter"
-            class="detail-filter"
-            autocomplete="off"
+            className="detail-filter"
+            autoComplete="off"
             aria-label="筛选字段"
             placeholder="筛选"
             value={filter}
@@ -172,14 +172,14 @@ export function Detail(p: DetailProps) {
         )}
       </div>
       {page === "fields" ? (
-        <table class="detail-fields" id="s-detail-fields">
+        <table className="detail-fields" id="s-detail-fields">
           {groupFields(hit.keys()).map((g) => {
             const keys = g.keys.filter((k) => matches(filter, k, shown(k, hit.get(k))));
             if (keys.length === 0) return null;
             return (
-              <tbody class="group" data-group={g.name ?? ""}>
+              <tbody key={g.name ?? ""} className="group" data-group={g.name ?? ""}>
                 {g.name !== null && (
-                  <tr class="group-name">
+                  <tr className="group-name">
                     <th colSpan={3}>{g.name}</th>
                   </tr>
                 )}
@@ -187,18 +187,18 @@ export function Detail(p: DetailProps) {
                   const v = hit.get(k) as Json;
                   const add = (negate: boolean): void => p.onAdd(detailCondition(k, negate, addValue(v)));
                   return (
-                    <tr data-key={k}>
-                      <th class="key" data-verbatim>
+                    <tr key={k} data-key={k}>
+                      <th className="key" data-verbatim>
                         {k}
                       </th>
-                      <td class="value" title={shown(k, v)} data-verbatim>
+                      <td className="value" title={shown(k, v)} data-verbatim>
                         <Value v={v} time={p.timeKeys.has(k)} terms={p.textTerms} />
                       </td>
-                      <td class="adds">
-                        <button type="button" class="add-eq" onClick={() => add(false)}>
+                      <td className="adds">
+                        <button type="button" className="add-eq" onClick={() => add(false)}>
                           = 加入
                         </button>
-                        <button type="button" class="add-ne" onClick={() => add(true)}>
+                        <button type="button" className="add-ne" onClick={() => add(true)}>
                           ≠ 排除
                         </button>
                       </td>
@@ -210,7 +210,7 @@ export function Detail(p: DetailProps) {
           })}
         </table>
       ) : (
-        <pre class="detail-json" id="s-detail-json" data-verbatim>
+        <pre className="detail-json" id="s-detail-json" data-verbatim>
           {prettyJson(hit)}
         </pre>
       )}

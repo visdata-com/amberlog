@@ -1,7 +1,10 @@
 // 界面外壳（REQ-AMB-UI-CONSOLE）：顶栏（三屏切换、时区、外观、口令）与三屏。三屏始终挂载、只显示当前屏，
 // 所以切换不发请求、各屏已填的内容与结果都保留（SWITCH）。
 
+import { useLayoutEffect } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { useStore } from "./lib/store.ts";
+import { SCREEN_PATHS, screenFromPath } from "./shell/routes.ts";
 import { LedgerScreen } from "./screens/ledger/LedgerScreen.tsx";
 import { ReconScreen } from "./screens/recon/ReconScreen.tsx";
 import { SearchScreen } from "./screens/search/SearchScreen.tsx";
@@ -37,40 +40,40 @@ export function applyTheme(theme: Theme): void {
 function TopBar() {
   const s = useStore(settings);
   return (
-    <header class="topbar">
-      <span class="brand">Amberlog</span>
+    <header className="topbar">
+      <span className="brand">Amberlog</span>
       <nav>
         {SCREENS.map((x) => (
-          <button type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
+          <button key={x.id} type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
             {x.label}
           </button>
         ))}
       </nav>
-      <span class="spacer" />
-      <label class="field">
+      <span className="spacer" />
+      <label className="field">
         <span>时区</span>
         <TimeZonePicker timezone={s.timezone} />
       </label>
       {s.tzUnknown && (
-        <span class="hint" id="tz-hint">
+        <span className="hint" id="tz-hint">
           服务端不认识所选时区，请改选其他时区
         </span>
       )}
-      <label class="field">
+      <label className="field">
         <span>外观</span>
         <select id="theme" value={s.theme} onChange={(e) => setTheme(e.currentTarget.value as Theme)}>
           {THEMES.map((t) => (
-            <option value={t.id}>{t.label}</option>
+            <option key={t.id} value={t.id}>{t.label}</option>
           ))}
         </select>
       </label>
-      <label class="field">
+      <label className="field">
         <span>口令</span>
         <input
           id="token"
           type="password"
-          autocomplete="off"
-          class={s.tokenInvalid ? "invalid" : undefined}
+          autoComplete="off"
+          className={s.tokenInvalid ? "invalid" : undefined}
           aria-invalid={s.tokenInvalid}
           value={s.token}
           onInput={(e) => setToken(e.currentTarget.value)}
@@ -80,11 +83,11 @@ function TopBar() {
           }}
         />
       </label>
-      <span class="note" id="token-note">
+      <span className="note" id="token-note">
         只保存在本标签页，关闭即清除
       </span>
       {s.tokenInvalid && (
-        <span class="hint" id="token-hint">
+        <span className="hint" id="token-hint">
           口令无效或未填写
         </span>
       )}
@@ -93,7 +96,18 @@ function TopBar() {
 }
 
 export function App() {
-  const { screen } = useStore(settings);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const screen = screenFromPath(location.pathname);
+  // URL 驱动可见屏幕；现有跨屏入口仍通过 setScreen 触发导航。
+  // 三屏实例始终保留，路由切换只改变 hidden，不触发查询或重置草稿与结果。
+  useLayoutEffect(() => {
+    if (settings.get().screen !== screen) settings.set({ screen });
+    return settings.subscribe(() => {
+      const next = settings.get().screen;
+      if (next !== screen) void navigate(SCREEN_PATHS[next]);
+    });
+  }, [screen, navigate]);
   return (
     <>
       <TopBar />
