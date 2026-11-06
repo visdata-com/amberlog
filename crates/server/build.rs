@@ -1,7 +1,8 @@
 //! 构建时注入提交号，供 `amberlog --version` 与 `starting`/`ready` 日志使用（REQ-AMB-CFG-STARTUP-V2）。
 //! 取不到 git 信息时（如从源码包构建）用全零占位。
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn git(args: &[&str]) -> Option<String> {
@@ -14,6 +15,7 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    embed_ui();
     let commit = git(&["rev-parse", "--short=12", "HEAD"])
         .filter(|s| s.len() >= 7 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .unwrap_or_else(|| "0000000".to_owned());
@@ -39,5 +41,64 @@ fn main() {
         && Path::new(&packed).exists()
     {
         watch(Path::new(&packed));
+    }
+}
+
+// 前端的资源清单在编译时生成；运行时不访问前端源码或构建目录。
+// 只嵌入 index.html 与 assets/ 下的已知资源类型，不暴露 manifest、源码或任意磁盘路径。
+fn embed_ui() {
+    let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/ui");
+    let mut resources = Vec::new();
+    ui_files(&root.join("assets"), &mut resources);
+    resources.sort();
+    assert!(
+        !resources.is_empty(),
+        "缺少前端页面资源，请先在 ui/ 运行 pnpm build"
+    );
+    let mut generated = String::from("const ASSETS: &[Asset] = &[\n");
+    for file in resources {
+        let relative = file.strip_prefix(&root).unwrap().to_str().unwrap();
+        assert!(
+            relative
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/_-.".contains(&b)),
+            "非法资源路径：{relative}"
+        );
+        let content_type = match file.extension().and_then(|s| s.to_str()) {
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("woff2") => "font/woff2",
+            _ => panic!("不支持的前端资源类型：{relative}"),
+        };
+        generated.push_str(&format!(
+            "    Asset {{ path: {:?}, content_type: {:?}, bytes: include_bytes!({:?}) }},\n",
+            format!("/ui/{relative}"),
+            content_type,
+            file.to_str().unwrap()
+        ));
+    }
+    generated.push_str("];\n");
+    let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    fs::write(output.join("ui_assets.rs"), generated).unwrap();
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("index.html").display()
+    );
+}
+
+fn ui_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    println!("cargo:rerun-if-changed={}", dir.display());
+    for entry in fs::read_dir(dir).expect("缺少前端资源目录，请先在 ui/ 运行 pnpm build")
+    {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            ui_files(&entry.path(), files);
+        } else {
+            assert!(kind.is_file(), "前端资源不允许符号链接");
+            files.push(entry.path());
+        }
     }
 }

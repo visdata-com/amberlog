@@ -128,7 +128,7 @@ fn disabled(b: &mut Browser, id: &str) -> bool {
 /// 分布图的柱：分桶起点与悬停文字。
 fn bars(b: &mut Browser) -> Vec<(String, String)> {
     let v = b.eval(
-        "[...document.querySelectorAll('#s-hist .hbar')].map(e => [e.dataset.start, e.title])",
+        "[...document.querySelectorAll('#s-hist .hbar')].map(e => [e.dataset.start, e.getAttribute('aria-label')])",
     );
     serde_json::from_value(v).unwrap()
 }
@@ -261,7 +261,7 @@ fn ui_search_dataset_401_retry() {
         ),
         "口令框未标出"
     );
-    assert_eq!(b.text("s-result").trim(), "", "结果区有出错文字");
+    assert!(b.exists("#s-result .result-state[data-kind=idle]"));
     assert!(!disabled(&mut b, "s-query"));
     fill_token(&mut b, TOKEN);
     wait_requests(&mut b, 2, is_candidates);
@@ -660,6 +660,9 @@ fn ui_search_histogram_draw() {
     let (_fx, s) = start(&[FUTURE]);
     let mut b = drawn(&s);
     assert_eq!(b.text("s-per-bar"), "每柱 1m");
+    assert!(b.exists("#s-hist .hist-axis"));
+    assert!(b.text("s-hist").contains("08:00"));
+    assert!(b.text("s-hist").contains("09:00"));
     assert!(
         b.wait_text("s-total", "共 4 条", WAIT),
         "{}",
@@ -675,17 +678,26 @@ fn ui_search_histogram_tooltip_timezone() {
     fill_range(&mut b, "app", "2026-10-30 16:00", "2026-10-30 17:00");
     query(&mut b);
     wait_bars(&mut b, 60);
-    for (_, title) in bars(&mut b) {
-        let want = if title.starts_with("2026-10-30 16:15:00.000000") {
+    for (_, label) in bars(&mut b) {
+        let want = if label.starts_with("2026-10-30 16:15:00") {
             "3"
-        } else if title.starts_with("2026-10-30 16:40:00.000000") {
+        } else if label.starts_with("2026-10-30 16:40:00") {
             "1"
         } else {
             "0"
         };
-        let n = title.split_whitespace().nth(2).unwrap_or_default();
-        assert_eq!(n, want, "{title}");
+        assert!(label.contains(&format!("，{want} 条日志")), "{label}");
     }
+    assert!(!b.exists("#s-hist .hbar[title]"), "柱体不再依赖原生 title");
+    b.eval(
+        "(() => { const e = document.querySelector('#s-hist .hbar[data-start=\"1793348100000000\"]'); \
+         const r = e.getBoundingClientRect(); e.dispatchEvent(new PointerEvent('pointerover', \
+         {bubbles:true,pointerType:'mouse',clientX:r.x+r.width/2,clientY:r.y+10})); })()"
+    );
+    assert!(b.wait_text("s-hist-tooltip", "2026-10-30 16:15:00", WAIT));
+    assert!(b.text("s-hist-tooltip").contains("2026-10-30 16:16:00"));
+    assert!(b.text("s-hist-tooltip").contains("3 条"));
+    assert!(b.text("s-hist-tooltip").contains("Asia/Shanghai"));
 }
 
 #[test]
@@ -706,20 +718,31 @@ fn ui_search_histogram_collapse() {
     ingest_now(&s, "app", json!({"a": 1}));
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
+    assert!(!b.exists("#s-hist-toggle"), "尚未查询时不应显示分布图开关");
+    search_stream(&mut b, "app");
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
     b.click("s-hist-toggle");
     search_stream(&mut b, "app");
     wait_requests(&mut b, 1, is_count);
     b.reopen(&url(&s));
     fill_token(&mut b, TOKEN);
-    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
+    assert!(
+        !b.exists("#s-hist-toggle"),
+        "记住收起设置后，首次展示也不应显示开关"
+    );
     search_stream(&mut b, "app");
+    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
     let counts = wait_requests(&mut b, 2, is_count);
     for c in &counts {
         assert_eq!(sql_of(c), "SELECT count(*) AS n FROM \"app\"");
     }
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(requests_where(&mut b, is_histogram).len(), 0);
+    assert_eq!(requests_where(&mut b, is_histogram).len(), 1);
     assert!(!b.exists("#s-hist"), "收起后分布图区仍占位");
+    b.click("s-hist-toggle");
+    let h = wait_requests(&mut b, 2, is_histogram).remove(1);
+    assert!(b.wait_finished(&h, WAIT));
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
 }
 
 #[test]
@@ -752,8 +775,7 @@ fn ui_search_histogram_sql_mode() {
     search_sql(&mut b, "SELECT host FROM \"app\"");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(data_requests(&mut b).len(), before + 1);
-    assert_eq!(b.text("s-hist-toggle"), "手写 SQL 不画分布图");
-    assert!(disabled(&mut b, "s-hist-toggle"));
+    assert!(!b.exists("#s-hist-toggle"), "SQL 模式不应显示分布图开关");
     assert_eq!(b.text("s-total"), "共 — 条");
 }
 
@@ -811,6 +833,8 @@ fn ui_search_count_429_total_only() {
         answer_error(b, is_count, 429, "too_many_queries")
     });
     screen(&mut b, "search");
+    search_stream(&mut b, "app");
+    assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
     b.click("s-hist-toggle");
     search_stream(&mut b, "app");
     let c = wait_requests(&mut b, 1, is_count).remove(0);
@@ -1866,9 +1890,18 @@ fn ui_search_detail_add_sql_cursor() {
     b.fill("s-sql", text);
     let at = text.find("WHERE ").unwrap() + "WHERE ".len();
     b.eval(&format!(
-        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({at}, {at}); \
-         e.dispatchEvent(new Event('select', {{bubbles: true}})); }})()"
+        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({}, {}); }})()",
+        text.len(), text.len()
     ));
+    // 用真实键盘事件移动光标；人工派发原生 select 不等于 React 的合成 onSelect。
+    for _ in at..text.len() {
+        for kind in ["keyDown", "keyUp"] {
+            b.call(
+                "Input.dispatchKeyEvent",
+                json!({"type": kind, "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37}),
+            );
+        }
+    }
     open_detail(&mut b, 1);
     detail_add(&mut b, "host", "add-eq");
     assert_eq!(

@@ -1,7 +1,8 @@
 // 字段栏（REQ-AMB-UI-SEARCH-V2 字段栏与取值提示一组）：当前数据集的字段按前缀分组、带类型标记、可筛选与收起；条件模式下展开字段列出取值，
 // 以「=」「≠」加入条件。状态与请求在 SearchScreen，这里只画。
 
-import { useState } from "preact/hooks";
+import { useState } from "react";
+import { Input } from "../../components/ui/Input.tsx";
 import { type Field, groupFields } from "./fields.ts";
 
 /** 一个取值：原始 JSON 文本、是否 JSON 字符串、显示的文字，与条数原文。 */
@@ -43,13 +44,14 @@ export function FieldsBar(p: FieldsBarProps) {
   const [filter, setFilter] = useState("");
   const groups = p.fields === null ? [] : groupFields(p.fields, filter);
   return (
-    <aside class="fields" id="s-fields">
-      <div class="fields-head">
-        <input
+    <aside className="fields" id="s-fields">
+      <div className="fields-head">
+        <Input
           id="s-fields-filter"
-          autocomplete="off"
-          spellcheck={false}
+          autoComplete="off"
+          spellCheck={false}
           aria-label="筛选字段"
+          placeholder="筛选字段名称"
           value={filter}
           onInput={(e) => setFilter(e.currentTarget.value)}
         />
@@ -58,9 +60,9 @@ export function FieldsBar(p: FieldsBarProps) {
         </button>
       </div>
       {p.error !== null && (
-        <div class="fields-error" id="s-fields-error">
-          {p.error.map((l) => (
-            <p>{l}</p>
+        <div className="fields-error" id="s-fields-error">
+          {p.error.map((l, i) => (
+            <p key={i}>{l}</p>
           ))}
         </div>
       )}
@@ -69,53 +71,64 @@ export function FieldsBar(p: FieldsBarProps) {
         // 筛选时组内匹配的字段照样列出，不论组是否收起（FIELDS-FILTER）
         const open = filter !== "" || p.open.has(key);
         return (
-          <section class="fgroup" data-group={key}>
-            <button type="button" class="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
-              <span class="fgroup-name">{g.name ?? "记录字段"}</span>
-              <span class="fcount">{g.fields.length}</span>
+          <section key={key} className="fgroup" data-group={key}>
+            <button type="button" className="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
+              <span className="fgroup-name" title={g.name ?? "记录字段"}>{g.name ?? "记录字段"}</span>
+              <span className="fcount">{g.fields.length}</span>
             </button>
             {open &&
               g.fields.map((f) => {
                 const v = p.values.get(f.name);
                 const expandable = f.name !== "_timestamp" && (v !== undefined || p.canExpand);
                 return (
-                  <div class="field" data-field={f.name}>
-                    <div class="field-row">
-                      <span class="ftype" data-type={kindOf(f)}>
+                  <div key={f.name} className="field" data-field={f.name}>
+                    <div className="field-row">
+                      <span className="ftype" data-type={kindOf(f)}>
                         {markOf(f)}
                       </span>
                       <button
                         type="button"
-                        class="fname"
+                        className="fname"
                         data-verbatim
                         disabled={!expandable}
                         aria-expanded={v !== undefined}
+                        title={f.name}
                         onClick={() => p.onToggleField(f.name)}
                       >
                         {f.name}
                       </button>
                     </div>
+                    {v?.kind === "loading" && <p className="fvalues-status" role="status">正在统计取值…</p>}
                     {v?.kind === "error" && (
-                      <div class="fvalues-error">
-                        {v.lines.map((l) => (
-                          <p>{l}</p>
+                      <div className="fvalues-error">
+                        {v.lines.map((l, i) => (
+                          <p key={i}>{l}</p>
                         ))}
                       </div>
                     )}
-                    {v?.kind === "ok" && (
-                      <ul class="fvalues">
+                    {v?.kind === "ok" && v.rows.length === 0 && (
+                      <p className="fvalues-status" role="status">暂无可用取值</p>
+                    )}
+                    {v?.kind === "ok" && v.rows.length > 0 && (
+                      <ul className="fvalues" tabIndex={0} aria-label={f.name + " 的常见取值，可滚动"}>
                         {v.rows.map((r) => (
-                          <li class="fvalue">
-                            <span class="fv-text" data-verbatim title={r.text}>
-                              {r.text}
-                            </span>
-                            <span class="fv-n" data-verbatim>{r.n}</span>
-                            <button type="button" class="fv-eq" onClick={() => p.onAdd(f.name, false, r)}>
-                              =
-                            </button>
-                            <button type="button" class="fv-ne" onClick={() => p.onAdd(f.name, true, r)}>
-                              ≠
-                            </button>
+                          <li key={r.json} className="fvalue">
+                            <div className="fv-summary">
+                              <span className="fv-text" data-verbatim title={r.text}>
+                                {r.text}
+                              </span>
+                              <span className="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
+                                {r.n}
+                              </span>
+                            </div>
+                            <div className="fv-actions">
+                              <button type="button" className="fv-eq" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>
+                                = 加入筛选
+                              </button>
+                              <button type="button" className="fv-ne" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>
+                                ≠ 排除此值
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
