@@ -1,7 +1,7 @@
 // 某屏的时间范围（REQ-AMB-UI-CONSOLE-TIME-INPUT、QUICK-RANGE、TIME-RANGE-KEPT）：以 UTC 微秒保存；起止框的文字只在
 // 用户编辑该框之后按所选时区换算一次，快捷项、缩放与跳转写入的是时刻；改时区只重显框里的写法，不改范围。
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo } from "preact/hooks";
 import { createStore, useStore, type Store } from "../lib/store.ts";
 import { formatLocal, nowUs, parseTimeInput } from "../lib/time.ts";
 import { settings } from "./settings.ts";
@@ -107,22 +107,22 @@ export function TimeRangeInputs({ range, prefix }: { range: TimeRange; prefix: s
   const shown = (v: bigint | null, text: string | null): string =>
     text !== null ? text : v === null ? "" : formatLocal(v, timezone);
   return (
-    <span className="range">
+    <span class="range">
       <input
         id={prefix + "-start"}
-        className="time-input"
-        autoComplete="off"
-        spellCheck={false}
+        class="time-input"
+        autocomplete="off"
+        spellcheck={false}
         aria-label="起"
         value={shown(m.start, m.startText)}
         onInput={(e) => range.edit("start", e.currentTarget.value)}
       />
-      <span className="arrow">→</span>
+      <span class="arrow">→</span>
       <input
         id={prefix + "-end"}
-        className="time-input"
-        autoComplete="off"
-        spellCheck={false}
+        class="time-input"
+        autocomplete="off"
+        spellcheck={false}
         aria-label="止"
         value={shown(m.end, m.endText)}
         onInput={(e) => range.edit("end", e.currentTarget.value)}
@@ -137,7 +137,7 @@ export function TimeRangeInputs({ range, prefix }: { range: TimeRange; prefix: s
       >
         <option value={CUSTOM}>自定义</option>
         {range.choices.map((c) => (
-          <option key={String(c.us)} value={String(c.us)}>{c.label}</option>
+          <option value={String(c.us)}>{c.label}</option>
         ))}
       </select>
     </span>

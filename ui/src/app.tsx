@@ -37,40 +37,40 @@ export function applyTheme(theme: Theme): void {
 function TopBar() {
   const s = useStore(settings);
   return (
-    <header className="topbar">
-      <span className="brand">Amberlog</span>
+    <header class="topbar">
+      <span class="brand">Amberlog</span>
       <nav>
         {SCREENS.map((x) => (
-          <button key={x.id} type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
+          <button type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
             {x.label}
           </button>
         ))}
       </nav>
-      <span className="spacer" />
-      <label className="field">
+      <span class="spacer" />
+      <label class="field">
         <span>时区</span>
         <TimeZonePicker timezone={s.timezone} />
       </label>
       {s.tzUnknown && (
-        <span className="hint" id="tz-hint">
+        <span class="hint" id="tz-hint">
           服务端不认识所选时区，请改选其他时区
         </span>
       )}
-      <label className="field">
+      <label class="field">
         <span>外观</span>
         <select id="theme" value={s.theme} onChange={(e) => setTheme(e.currentTarget.value as Theme)}>
           {THEMES.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
+            <option value={t.id}>{t.label}</option>
           ))}
         </select>
       </label>
-      <label className="field">
+      <label class="field">
         <span>口令</span>
         <input
           id="token"
           type="password"
-          autoComplete="off"
-          className={s.tokenInvalid ? "invalid" : undefined}
+          autocomplete="off"
+          class={s.tokenInvalid ? "invalid" : undefined}
           aria-invalid={s.tokenInvalid}
           value={s.token}
           onInput={(e) => setToken(e.currentTarget.value)}
@@ -80,11 +80,11 @@ function TopBar() {
           }}
         />
       </label>
-      <span className="note" id="token-note">
+      <span class="note" id="token-note">
         只保存在本标签页，关闭即清除
       </span>
       {s.tokenInvalid && (
-        <span className="hint" id="token-hint">
+        <span class="hint" id="token-hint">
           口令无效或未填写
         </span>
       )}
@@ -93,7 +93,7 @@ function TopBar() {
 }
 
 export function App() {
-  const screen = useStore(settings).screen;
+  const { screen } = useStore(settings);
   return (
     <>
       <TopBar />

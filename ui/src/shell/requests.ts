@@ -2,7 +2,7 @@
 // 「取消」中止本屏尚未得到响应的全部数据请求（含附属请求）。检索屏的上下文请求（REQ-AMB-UI-SEARCH-V2 上下文浏览一组）按结果请求
 // 呈现，失败或被取消时结果区在出错或取消的文字之下保留原来的结果（`keep`）。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import type { Hit, Json } from "../lib/json.ts";
 import { getFields, postSearch, type FieldsOutcome, type Outcome, type Query } from "./api.ts";
 import { errorLines, isTooMany, retrySeconds } from "./errors.ts";

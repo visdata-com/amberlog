@@ -1,4 +1,4 @@
-import { createRoot } from "react-dom/client";
+import { render } from "preact";
 import { App, applyTheme } from "./app.tsx";
 import { settings } from "./shell/settings.ts";
 import "./style.css";
@@ -12,4 +12,4 @@ settings.subscribe(() => {
     applyTheme(theme);
   }
 });
-createRoot(document.getElementById("app") as HTMLElement).render(<App />);
+render(<App />, document.getElementById("app") as HTMLElement);

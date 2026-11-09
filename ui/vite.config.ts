@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import preact from "@preact/preset-vite";
 
 export default defineConfig({
   base: "/ui/",
-  plugins: [react()],
+  plugins: [preact({ reactAliasesEnabled: false })],
   build: {
     target: "es2022",
     manifest: true,

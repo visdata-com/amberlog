@@ -90,7 +90,7 @@ pnpm check                         # rebuilds and compares byte for byte with th
 cd .. && node tools/ui-deps-check.mjs   # licenses and sources of the front-end dependencies
 ```
 
-For development, run the Rust service on port 8800 and `pnpm dev` in `ui/`, then open `http://127.0.0.1:5173/ui/`. Vite proxies `/api` to the service and updates the UI on save; set `AMBERLOG_API_ORIGIN` to use a different backend. The production entry remains `/ui`; all resources are embedded in the binary, so users do not install Node or deploy a resource directory or reverse proxy. The build budget is 512 KiB total raw / 192 KiB gzip, replacing the single-HTML 200 KiB limit because React is included. Raise it only with an explanation in the pull request.
+For development, run the Rust service on port 8800 and `pnpm dev` in `ui/`, then open `http://127.0.0.1:5173/ui/`. Vite proxies `/api` to the service and updates the UI on save; set `AMBERLOG_API_ORIGIN` to use a different backend. The production entry remains `/ui`; all resources are embedded in the binary, so users do not install Node or deploy a resource directory or reverse proxy. The build budget is 512 KiB total raw / 192 KiB gzip for all generated assets, replacing the single-HTML 200 KiB limit. Raise it only with an explanation in the pull request.
 
 If the build output conflicts in a merge, take either side, merge the source, then rebuild; do not merge the output by hand.
 
@@ -218,7 +218,7 @@ pnpm check                         # 重新构建并与提交的产物逐字节�
 cd .. && node tools/ui-deps-check.mjs   # 前端依赖的许可与来源
 ```
 
-开发时先在 8800 端口启动 Rust 服务，再在 `ui/` 执行 `pnpm dev`，打开 `http://127.0.0.1:5173/ui/`。Vite 代理 `/api`，保存源码即可更新；后端地址可用 `AMBERLOG_API_ORIGIN` 修改。正式入口仍为 `/ui`。全部资源嵌入二进制，用户无需安装 Node、部署资源目录或配置反向代理。React 引入后，预算从单个 HTML 的 200 KiB 改为全部资源原始体积 512 KiB / gzip 192 KiB；提高预算需在 PR 中说明。
+开发时先在 8800 端口启动 Rust 服务，再在 `ui/` 执行 `pnpm dev`，打开 `http://127.0.0.1:5173/ui/`。Vite 代理 `/api`，保存源码即可更新；后端地址可用 `AMBERLOG_API_ORIGIN` 修改。正式入口仍为 `/ui`。全部资源嵌入二进制，用户无需安装 Node、部署资源目录或配置反向代理。多文件产物预算为全部资源原始体积 512 KiB / gzip 192 KiB，代替单个 HTML 的 200 KiB 限额；提高预算需在 PR 中说明。
 
 产物合并冲突时，取任一边，合完源码后重新构建，不要手工合并。
 
