@@ -108,8 +108,8 @@ fn ui_console_page_requests() {
     assert_eq!(others, Vec::<String>::new());
 }
 
-/// 查询串不影响入口（REQ-AMB-UI-CONSOLE-PAGE）；入口和已声明的构建资源可访问，
-/// 其他页面、文件和源码路径仍按 REQ-AMB-ERR-ENVELOPE 返回 404。
+/// 查询串不影响入口；`/ui` 下的页面路径交给前端，文件和源码路径仍按
+/// REQ-AMB-ERR-ENVELOPE 返回 404。
 #[test]
 fn ui_console_page_path_exact() {
     let (_fx, s) = start(&[]);
@@ -117,9 +117,17 @@ fn ui_console_page_path_exact() {
     let q = s.get("/ui?x=1#y");
     assert_eq!(q.status, 200);
     assert_eq!(q.text(), page);
-    for path in ["/ui/"] {
+    for path in [
+        "/ui/",
+        "/ui/search",
+        "/ui/ledger",
+        "/ui/reconciliation",
+        "/ui/settings",
+        "/ui/settings/profile?tab=appearance",
+    ] {
         let r = s.get(path);
-        assert_eq!(r.status, 404, "{path}");
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.text(), page, "{path}");
     }
     for p in [
         "/ui/index.html",
@@ -130,6 +138,82 @@ fn ui_console_page_path_exact() {
         "/uix/settings",
     ] {
         assert_eq!(s.get(p).status, 404, "{p}");
+    }
+}
+
+#[test]
+fn ui_console_routes_open_and_reload() {
+    let (_fx, s) = start(&[]);
+    let mut b = Browser::launch();
+    for (path, screen) in [
+        ("/ui/", "search"),
+        ("/ui/search", "search"),
+        ("/ui/ledger", "ledger"),
+        ("/ui/reconciliation", "recon"),
+    ] {
+        b.open(&format!("http://{}{path}", s.addr));
+        let visible = format!(
+            "document.getElementById('{screen}') !== null && !document.getElementById('{screen}').hidden"
+        );
+        assert!(b.wait_until(&visible, WAIT), "直接访问 {path}");
+        assert_eq!(shown_screen(&mut b), screen);
+        b.eval("window.__beforeReload = true");
+        b.call("Page.reload", json!({"ignoreCache": true}));
+        assert!(
+            b.wait_until(
+                &format!(
+                    "document.readyState === 'complete' && window.__beforeReload !== true && ({visible})"
+                ),
+                WAIT
+            ),
+            "刷新 {path}"
+        );
+        assert_eq!(shown_screen(&mut b), screen);
+    }
+}
+
+#[test]
+fn ui_console_route_navigation_updates_history_without_queries() {
+    let (_fx, s) = start(&[]);
+    let mut b = open(&s);
+    let requests = data_requests(&mut b).len();
+    screen(&mut b, "ledger");
+    assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
+    screen(&mut b, "recon");
+    assert!(b.wait_until("location.pathname === '/ui/reconciliation'", WAIT));
+    b.eval("history.back()");
+    assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
+    assert_eq!(shown_screen(&mut b), "ledger");
+    b.eval("history.back()");
+    assert!(b.wait_until("location.pathname === '/ui'", WAIT));
+    assert_eq!(shown_screen(&mut b), "search");
+    assert_eq!(data_requests(&mut b).len(), requests, "切页触发了查询");
+}
+
+#[test]
+fn ui_console_unknown_page_is_handled_by_frontend() {
+    let (_fx, s) = start(&[]);
+    let mut b = Browser::launch();
+    for path in ["/ui/settings", "/ui/settings/profile?tab=appearance"] {
+        let r = s.get(path);
+        assert_eq!(r.status, 200, "{path} 未返回应用入口");
+        b.open(&format!("http://{}{path}", s.addr));
+        let not_found = "document.querySelector('[data-page=\"not-found\"]') !== null && document.getElementById('not-found-title')?.textContent === '页面不存在'";
+        assert!(b.wait_until(not_found, WAIT), "{path} 未由前端处理");
+        b.eval("window.__beforeReload = true");
+        b.call("Page.reload", json!({"ignoreCache": true}));
+        assert!(
+            b.wait_until(
+                &format!(
+                    "document.readyState === 'complete' && window.__beforeReload !== true && ({not_found})"
+                ),
+                WAIT
+            ),
+            "刷新 {path} 后未由前端处理"
+        );
+        b.click("not-found-home");
+        assert!(b.wait_until("location.pathname === '/ui/'", WAIT));
+        assert_eq!(shown_screen(&mut b), "search");
     }
 }
 

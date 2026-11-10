@@ -154,6 +154,64 @@ main {
   padding: 12px 16px;
 }
 
+.not-found {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(28px, 8vw, 96px);
+  min-height: min(520px, calc(100vh - 64px));
+  padding: 48px 24px;
+}
+
+.not-found__code {
+  color: var(--amber);
+  font: 700 clamp(76px, 16vw, 168px)/0.9 "Noto Sans Mono CJK SC", "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: -0.08em;
+  opacity: 0.85;
+}
+
+.not-found__content {
+  max-width: 420px;
+}
+
+.not-found__eyebrow {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.not-found h1 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.2;
+}
+
+.not-found__message {
+  margin: 12px 0 20px;
+  color: var(--muted);
+}
+
+.not-found__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .not-found {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 20px;
+    padding-top: 32px;
+  }
+
+  .not-found__code {
+    font-size: 84px;
+  }
+}
+
 .screen {
   display: flex;
   flex-direction: column;

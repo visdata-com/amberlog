@@ -1,9 +1,28 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import preact from "@preact/preset-vite";
+
+function normalizeUiEntry(): Plugin {
+  return {
+    name: "amberlog-ui-entry-slash",
+    apply: "serve" as const,
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const url = request.url ?? "";
+        if (url === "/ui" || url.startsWith("/ui?")) {
+          response.statusCode = 302;
+          response.setHeader("Location", `/ui/${url.slice("/ui".length)}`);
+          response.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig({
   base: "/ui/",
-  plugins: [preact({ reactAliasesEnabled: false })],
+  plugins: [preact({ reactAliasesEnabled: false }), normalizeUiEntry()],
   build: {
     target: "es2022",
     manifest: true,

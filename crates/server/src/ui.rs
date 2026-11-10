@@ -6,11 +6,13 @@
 //! 后者给检索屏的字段栏与取值提示），访问口令由用户在页面上填写、
 //! 只存当前标签页的会话存储。`/ui` 不在认证区内（REQ-AMB-ERR-ENVELOPE），服务端不往页面里嵌入任何口令或数据。
 
+use amberlog_common::error::Reason;
 use axum::Router;
+use axum::extract::{Path, rejection::PathRejection};
 use axum::http::header;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 
-use crate::gateway::Endpoint;
+use crate::gateway::{ApiError, Endpoint};
 
 /// 页面全文（`ui/` 的构建产物）。
 pub const PAGE: &str = include_str!("ui/index.html");
@@ -23,9 +25,12 @@ struct Asset {
 
 include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 
-/// 页面入口和构建产物都由 Rust 从二进制中提供，不依赖运行时的静态文件目录。
+/// 前端页面统一交给 Preact 路由；资源只提供实际嵌入的文件，不影响 /api 等其他前缀。
 pub fn router() -> Router {
-    let mut routes = Router::new().route("/ui", Endpoint::new().get(page).into());
+    let mut routes = Router::new()
+        .route("/ui", Endpoint::new().get(page).into())
+        .route("/ui/", Endpoint::new().get(page).into())
+        .route("/ui/{*path}", Endpoint::new().get(frontend_page).into());
     for asset in ASSETS {
         routes = routes.route(
             asset.path,
@@ -44,6 +49,19 @@ pub fn router() -> Router {
         );
     }
     routes
+}
+
+/// 只为页面路径返回入口；缺失资源、源码和隐藏文件不能回退成 HTML。
+async fn frontend_page(path: Result<Path<String>, PathRejection>) -> Response {
+    match path {
+        Ok(Path(path))
+            if !matches!(path.split('/').next(), Some("assets" | "src"))
+                && !path.split('/').any(|part| part.contains('.')) =>
+        {
+            page().await.into_response()
+        }
+        _ => ApiError::new(Reason::NotFound, "no route for this path").into_response(),
+    }
 }
 
 async fn page() -> impl IntoResponse {
@@ -68,7 +86,16 @@ mod tests {
     #[tokio::test]
     async fn serves_ui_routes_and_embedded_assets() {
         let app = crate::gateway::finish(router());
-        for path in ["/ui", "/ui?x=1"] {
+        for path in [
+            "/ui",
+            "/ui/",
+            "/ui/ledger",
+            "/ui/search?x=1",
+            "/ui/reconciliation",
+            "/ui/settings",
+            "/ui/settings/profile?tab=appearance",
+            "/ui/future-page",
+        ] {
             let response = app
                 .clone()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -133,7 +160,6 @@ mod tests {
             "/ui/src/",
             "/ui/src/main.tsx",
             "/ui/src/component",
-            "/ui/",
             "/ui/index.html",
             "/ui/missing.css",
             "/ui/missing.js.map",
@@ -153,6 +179,10 @@ mod tests {
         }
         for path in [
             "/ui",
+            "/ui/",
+            "/ui/search",
+            "/ui/settings",
+            "/ui/settings/profile",
             ASSETS[0].path,
         ] {
             for method in ["HEAD", "OPTIONS", "POST"] {
