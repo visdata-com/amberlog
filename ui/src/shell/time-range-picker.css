@@ -1,0 +1,48 @@
+.time-range-picker { display: inline-flex; min-width: 0; max-width: 100%; }
+.time-range-summary { display: inline-flex; align-items: center; gap: var(--space-2); max-width: min(36em, 100%); text-align: left; }
+.time-range-summary > svg { flex-shrink: 0; }
+.time-range-summary > span:first-of-type { min-width: 0; overflow-wrap: anywhere; }
+.time-range-description { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.time-range-panel {
+  position: fixed; z-index: 10; width: min(480px, calc(100vw - 32px));
+  padding: var(--space-4); overflow: auto; overscroll-behavior: contain;
+  background: var(--panel); color: var(--text); border: var(--border-default);
+  border-radius: var(--radius); box-shadow: var(--shadow-popover);
+  display: flex; flex-direction: column; gap: var(--space-3); font-size: var(--font-size-base);
+}
+.time-range-heading, .time-range-month, .time-range-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.time-range-heading { font-weight: var(--font-weight-medium); }
+.time-range-heading > button { min-width: var(--control-height); }
+.time-range-tabs { display: flex; gap: var(--space-2); border-bottom: var(--border-default); }
+.time-range-tabs > button { border: none; border-radius: 0; border-bottom: 2px solid transparent; }
+.time-range-tabs > button[aria-selected="true"] { color: var(--link); border-bottom-color: var(--link); font-weight: var(--font-weight-medium); }
+.time-range-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.time-range-presets > button { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); color: var(--text); }
+.time-range-presets > button[aria-pressed="true"] { background: var(--amber-soft); border-color: var(--link); }
+.time-range-month { margin-bottom: var(--space-2); font-weight: var(--font-weight-medium); }
+.time-range-month > button { min-width: var(--control-height); }
+.time-range-calendar [role="row"] { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-1); }
+.time-range-calendar [role="columnheader"] { padding-block: var(--space-1); text-align: center; color: var(--muted); }
+.time-range-calendar [role="gridcell"] { display: flex; min-width: 0; padding-block: var(--space-1); }
+.time-range-calendar .time-range-day { width: 100%; padding-inline: 0; border-color: transparent; background: var(--panel); color: var(--text); }
+.time-range-calendar .time-range-day.is-other { color: var(--muted); }
+.time-range-calendar .time-range-day.is-range { background: var(--amber-soft); }
+.time-range-calendar .time-range-day[aria-current="date"] { text-decoration: underline; text-underline-offset: 3px; }
+.time-range-calendar .time-range-day.is-endpoint { background: var(--button); color: var(--ui-button-primary-text, var(--button-text)); border-color: var(--button); }
+.time-range-calendar .time-range-day:enabled:hover { border-color: var(--link); background: var(--hover-bg); }
+.time-range-calendar .time-range-day.is-endpoint:enabled:hover { background: var(--button-hover); border-color: var(--button-hover); }
+.time-range-calendar .time-range-day.is-endpoint:enabled:active { background: var(--button-active); border-color: var(--button-active); }
+.time-range-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.time-range-times label { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.time-range-times input { width: 100%; min-width: 0; font-family: var(--font-family-mono); }
+.time-range-date { font-size: var(--font-size-sm); color: var(--muted); }
+.time-range-preview { display: flex; flex-direction: column; gap: var(--space-1); padding-top: var(--space-2); border-top: var(--border-default); }
+.time-range-preview-value { font-family: var(--font-family-mono); white-space: nowrap; overflow-x: auto; max-width: 100%; }
+.time-range-note { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--font-size-sm); }
+.time-range-error { margin: 0; color: var(--brick); }
+.time-range-footer { flex-wrap: wrap; border-top: var(--border-default); padding-top: var(--space-3); }
+.time-range-zone { color: var(--muted); overflow-wrap: anywhere; }
+.time-range-zone > span { color: var(--text); }
+@media (max-width: 480px) {
+  .time-range-times { grid-template-columns: minmax(0, 1fr); }
+}

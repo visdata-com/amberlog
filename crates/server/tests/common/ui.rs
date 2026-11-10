@@ -2,8 +2,9 @@
 //! 打开 `/ui`、按元素 id 操作三屏、区分页面发出的各种数据请求、造数据。
 //!
 //! 元素 id（用户看不到，只给测试用）：顶栏 `token`、`tz`、`theme`，屏切换为 `nav button[data-screen=search|ledger|recon]`；
-//! 三屏各以 `s-`、`l-`、`r-` 为前缀：`#<p>-start`、`#<p>-end`（起止框）、`#<p>-quick`（快捷项）、`#<p>-query`（「查询」）、
-//! `#<p>-result`（结果区）、`#<p>-cancel`（「取消」）；检索屏另有 `#s-stream`、`#s-mode-cond`、`#s-mode-sql`、`#s-sql`，
+//! 三屏各以 `s-`、`l-`、`r-` 为前缀：`#<p>-query`（「查询」）、`#<p>-result`（结果区）、`#<p>-cancel`（「取消」）；
+//! 台账、对账有 `#<p>-start`、`#<p>-end`（起止框）、`#<p>-quick`（快捷项）。检索屏使用 `#s-time-trigger` 时间弹层，
+//! 另有 `#s-stream`、`#s-mode-cond`、`#s-mode-sql`、`#s-sql`，
 //! 对账屏另有 `#r-dataset`。其余 id 由各屏的测试文件在文件头写明。
 
 use std::time::Duration;
@@ -50,6 +51,65 @@ pub fn open_with_token(s: &Server) -> Browser {
 pub fn fill_token(b: &mut Browser, token: &str) {
     b.fill("token", token);
     b.blur("token");
+}
+
+/// 打开检索时间弹层；控件修改不执行查询。
+fn open_search_time(b: &mut Browser) {
+    if !b.exists("#s-time-panel") {
+        b.click("s-time-trigger");
+        assert!(b.wait_until("document.getElementById('s-time-panel') !== null", WAIT));
+    }
+}
+
+fn close_search_time(b: &mut Browser) {
+    b.click_sel("#s-time-panel button[aria-label='关闭时间范围']");
+}
+
+/// 通过日历选择日期，月份导航和点选都经过真实控件。
+fn search_date(b: &mut Browser, date: &str) {
+    let target = date[..4].parse::<i32>().unwrap() * 12 + date[5..7].parse::<i32>().unwrap();
+    for _ in 0..24 {
+        let shown = b.text("s-time-month");
+        let pieces: Vec<_> = shown.split_whitespace().collect();
+        let current = pieces[0].parse::<i32>().unwrap() * 12 + pieces[2].parse::<i32>().unwrap();
+        if current == target {
+            b.click_sel(&format!("#s-time-panel button[data-date={}]", json!(date)));
+            return;
+        }
+        b.click_sel(if current < target {
+            "#s-time-panel button[aria-label='下个月']"
+        } else {
+            "#s-time-panel button[aria-label='上个月']"
+        });
+    }
+    panic!("无法导航到日期 {date}");
+}
+
+/// 通过日历和时间框设置绝对范围；文本按页面所选时区解释。
+pub fn search_range(b: &mut Browser, start: &str, end: &str) {
+    open_search_time(b);
+    b.click("s-time-tab-absolute");
+    search_date(b, &start[..10]);
+    search_date(b, &end[..10]);
+    b.fill("s-time-start", &start[11..]);
+    b.fill("s-time-end", &end[11..]);
+    close_search_time(b);
+}
+
+/// 选择检索的相对时间快捷项。
+pub fn search_quick(b: &mut Browser, us: i64) {
+    open_search_time(b);
+    b.click("s-time-tab-relative");
+    b.click_sel(&format!("#s-time-relative button[value='{}']", us));
+    close_search_time(b);
+}
+
+/// 把检索的开始时间改为无效输入，用于验证不发请求与旧结果保留。
+pub fn invalidate_search_time(b: &mut Browser) {
+    open_search_time(b);
+    b.click("s-time-tab-absolute");
+    b.fill("s-time-start", "25:00");
+    close_search_time(b);
 }
 
 // ---- 数据请求 ----

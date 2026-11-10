@@ -37,8 +37,7 @@ fn around_now() -> (i64, i64) {
 fn fill_search(b: &mut Browser, stream: &str, start: &str, end: &str) {
     screen(b, "search");
     b.fill("s-stream", stream);
-    b.fill("s-start", start);
-    b.fill("s-end", end);
+    search_range(b, start, end);
 }
 
 /// 检索请求的 `(start_time, end_time)`。
@@ -271,9 +270,8 @@ fn ui_console_switch_keeps_state() {
     search_stream(&mut b, "app");
     let snapshot = |b: &mut Browser| {
         b.eval(
-            "[document.getElementById('s-stream').value, document.getElementById('s-start').value, \
-              document.getElementById('s-end').value, document.getElementById('s-quick').value, \
-              document.getElementById('s-result').innerHTML]",
+            "[document.getElementById('s-stream').value, document.getElementById('s-time-trigger').textContent, \
+              document.getElementById('s-time-description').textContent, document.getElementById('s-result').innerHTML]",
         )
     };
     let before = snapshot(&mut b);
@@ -519,7 +517,7 @@ fn ui_console_time_input_zone() {
     let (_fx, s) = start(&[]);
     let mut b = open_with(&s, |b| b.set_timezone("Asia/Shanghai"));
     fill_token(&mut b, TOKEN);
-    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16T09:00:00Z");
+    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16 17:00");
     b.click("s-query");
     let r = wait_requests(&mut b, 1, is_search).remove(0);
     assert_eq!(range_of(&r), (1_792_137_600_000_000, 1_792_141_200_000_000));
@@ -542,9 +540,9 @@ fn ui_console_time_input_invalid() {
     let mut b = open(&s);
     // 每次在新开的标签页里填写，结果区原本为空，「时刻格式无效」是这一次显示的
     for (i, (start, end)) in [
-        ("2026/10/16 8点", ""),
-        ("2026-10-16 08:00", ""),
-        ("2026-02-30 10:00", "2026-03-01 10:00"),
+        ("2026-10-16 25:00", "2026-10-16 09:00"),
+        ("2026-10-16 08:00", "2026-10-16 "),
+        ("2026-10-16 10:00", "2026-10-16 09:00"),
     ]
     .into_iter()
     .enumerate()
@@ -555,8 +553,7 @@ fn ui_console_time_input_invalid() {
         screen(&mut b, "search");
         b.fill("s-stream", "app");
         assert!(b.exists("#s-result .result-state[data-kind=idle]"));
-        b.fill("s-start", start);
-        b.fill("s-end", end);
+        search_range(&mut b, start, end);
         b.click("s-query");
         assert!(
             b.wait_text("s-result", "时刻格式无效", WAIT),
@@ -575,7 +572,7 @@ fn ui_console_quick_range() {
     fill_token(&mut b, TOKEN);
     screen(&mut b, "search");
     b.fill("s-stream", "app");
-    b.select("s-quick", "900000000");
+    search_quick(&mut b, 900_000_000);
     std::thread::sleep(Duration::from_millis(1100));
     let t0 = now_us();
     b.click("s-query");
@@ -585,8 +582,7 @@ fn ui_console_quick_range() {
     // 浏览器取的时刻精确到毫秒
     assert!(end >= t0 - 1000 && end <= t1, "{t0} ≤ {end} ≤ {t1}");
     assert_eq!(end - start, 900_000_000);
-    assert_eq!(b.value("s-start"), utc_text(start));
-    assert_eq!(b.value("s-end"), utc_text(end));
+    assert!(b.text("s-time-trigger").contains("15 分钟"));
 }
 
 #[test]
@@ -598,8 +594,10 @@ fn ui_console_time_range_kept_on_tz_change() {
     b.click("s-query");
     wait_requests(&mut b, 1, is_search);
     b.select("tz", "UTC");
-    assert_eq!(b.value("s-start"), "2026-10-16 08:00:00.000000");
-    assert_eq!(b.value("s-end"), "2026-10-16 09:00:00.000000");
+    assert!(
+        b.text("s-time-description")
+            .contains("2026-10-16 08:00:00 → 2026-10-16 09:00:00")
+    );
     b.click("s-query");
     let rs = wait_requests(&mut b, 2, is_search);
     for r in &rs {
