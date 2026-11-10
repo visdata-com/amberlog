@@ -1,8 +1,7 @@
 // 数据集输入框：统一候选列表、无浏览器自动填充和键盘提交行为。
 
-import { Input } from "../components/ui/Input.tsx";
-import type { KeyboardEvent, JSX } from "react";
-import { useEffect, useRef, useState } from "react";
+import type { JSX } from "preact";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 export interface DatasetInputProps {
   id: string;
@@ -44,8 +43,7 @@ export function DatasetInput({ id, listId, value, options, placeholder = "输入
     inputRef.current?.focus();
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+  const onKeyDown = (event: KeyboardEvent): void => {
     switch (event.key) {
       case "ArrowDown":
         if (visible.length === 0) return;
@@ -80,12 +78,12 @@ export function DatasetInput({ id, listId, value, options, placeholder = "输入
   };
 
   return (
-    <div ref={rootRef} className="dataset-input custom-select">
-      <Input
+    <div ref={rootRef} class="dataset-input custom-select">
+      <input
         ref={inputRef}
         id={id}
-        className="dataset-input__input"
-        autoComplete="off"
+        class="dataset-input__input"
+        autocomplete="off"
         placeholder={placeholder}
         aria-label="数据集"
         role="combobox"
@@ -97,24 +95,19 @@ export function DatasetInput({ id, listId, value, options, placeholder = "输入
         onFocus={() => setOpen(visible.length > 0)}
         onClick={() => setOpen(visible.length > 0)}
         onInput={(event) => {
-          onInput(event.currentTarget.value, (event.nativeEvent as InputEvent).inputType);
+          onInput(event.currentTarget.value, (event as InputEvent).inputType);
           setOpen(true);
         }}
-        onBlur={(event) => {
-          setOpen(false);
-          onBlur?.(event.currentTarget.value);
-        }}
+        onBlur={onBlur === undefined ? undefined : (event) => onBlur(event.currentTarget.value)}
         onKeyDown={onKeyDown}
       />
-      <span className="custom-select__chevron" aria-hidden="true" />
+      <span class="custom-select__chevron" aria-hidden="true" />
       {open && visible.length > 0 && (
-        <div id={listboxId} className="custom-select__menu dataset-input__menu" role="listbox" aria-label="数据集候选">
+        <div id={listboxId} class="custom-select__menu dataset-input__menu" role="listbox" aria-label="数据集候选">
           {visible.map((option, index) => (
             <div
-              key={option}
               id={`${id}-option-${index}`}
-              className="custom-select__option"
-              title={option}
+              class="custom-select__option"
               role="option"
               aria-selected={option === value}
               data-active={index === activeIndex}
@@ -122,14 +115,14 @@ export function DatasetInput({ id, listId, value, options, placeholder = "输入
               onClick={() => choose(option)}
             >
               <span>{option}</span>
-              {option === value && <span className="custom-select__check" aria-hidden="true">✓</span>}
+              {option === value && <span class="custom-select__check" aria-hidden="true">✓</span>}
             </div>
           ))}
         </div>
       )}
       <datalist id={listId} hidden>
         {options.map((option) => (
-          <option key={option} value={option} />
+          <option value={option} />
         ))}
       </datalist>
     </div>

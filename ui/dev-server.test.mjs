@@ -5,6 +5,7 @@ import { readFile, mkdtemp, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import configuration, { backendTarget } from './vite.config.ts';
 
@@ -106,7 +107,7 @@ test('development server serves source, proxies errors and never writes embedded
 });
 
 test('CSS updates in place and modules without an HMR boundary reload the page', async () => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'amberlog-ui-watch-')));
+  const directory = await realpath(await mkdtemp(fileURLToPath(new URL('./.amberlog-ui-watch-', import.meta.url))));
   const css = join(directory, 'style.css');
   const script = join(directory, 'main.tsx');
   const plain = join(directory, 'helper.js');
@@ -126,8 +127,8 @@ test('CSS updates in place and modules without an HMR boundary reload the page',
     await once(socket, 'open');
     for (const path of ['/', '/main.tsx', '/style.css', '/helper.js']) {
       const response = await fetch(`http://${address}/ui${path}`);
-      assert.equal(response.status, 200);
-      await response.text();
+      const body = await response.text();
+      assert.equal(response.status, 200, `${path}: ${body.slice(0, 500)}`);
     }
     const changed = async (file, content, predicate) => {
       const message = new Promise((resolve, reject) => {

@@ -10,17 +10,17 @@ interface ResultStateProps extends ResultStateContent {
 
 export function ResultState({ kind, title, description }: ResultStateProps) {
   return (
-    <div className="result-state" data-kind={kind} role="status" aria-atomic="true">
-      <div className="result-state__icon" aria-hidden="true">
+    <div class="result-state" data-kind={kind} role="status" aria-atomic="true">
+      <div class="result-state__icon" aria-hidden="true">
         {kind === "loading" ? (
-          <svg className="result-state__spinner" viewBox="0 0 40 40" fill="none">
-            <circle cx="20" cy="20" r="15" stroke="currentColor" strokeWidth="2" opacity="0.16" />
-            <path d="M20 5a15 15 0 0 1 15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          <svg class="result-state__spinner" viewBox="0 0 40 40" fill="none">
+            <circle cx="20" cy="20" r="15" stroke="currentColor" stroke-width="2" opacity="0.16" />
+            <path d="M20 5a15 15 0 0 1 15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           </svg>
         ) : (
-          <svg viewBox="0 0 64 64" fill="none" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <svg viewBox="0 0 64 64" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <path
-              className="result-state__document"
+              class="result-state__document"
               d="M29 9H17a4 4 0 0 0-4 4v34a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4V21L29 9m0 0v12h12M21 29h12m-12 7h8m-8 7h5"
             />
             <circle cx="43" cy="40" r="10" />
@@ -29,8 +29,8 @@ export function ResultState({ kind, title, description }: ResultStateProps) {
           </svg>
         )}
       </div>
-      <h3 className="result-state__title">{title}</h3>
-      <p className="result-state__description">{description}</p>
+      <h3 class="result-state__title">{title}</h3>
+      <p class="result-state__description">{description}</p>
     </div>
   );
 }

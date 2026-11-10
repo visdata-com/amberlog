@@ -1,7 +1,7 @@
-import type { ComponentPropsWithRef } from "react";
+import type { InputHTMLAttributes } from "preact";
 import "./checkbox.css";
 
-export type CheckboxProps = Omit<ComponentPropsWithRef<"input">, "type"> & { class?: string | undefined };
+export type CheckboxProps = Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "role"> & { class?: string | undefined };
 
 export function Checkbox({ class: classAttr, className, ...props }: CheckboxProps) {
   const classes = ["ui-checkbox", classAttr, className].filter(Boolean).join(" ");

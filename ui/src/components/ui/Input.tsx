@@ -1,4 +1,4 @@
-import type { ComponentPropsWithRef } from "react";
+import type { ComponentProps as ComponentPropsWithRef } from "preact";
 import "./input.css";
 
 export type InputProps = ComponentPropsWithRef<"input"> & {

@@ -1,7 +1,7 @@
-import { useNavigate } from "react-router";
+import { useLocation } from "preact-iso";
 
 export function NotFoundPage() {
-  const navigate = useNavigate();
+  const location = useLocation();
 
   return (
     <main className="not-found" data-page="not-found">
@@ -15,15 +15,15 @@ export function NotFoundPage() {
           这个地址没有对应的工作台页面。你可以返回检索首页，或回到刚才浏览的位置。
         </p>
         <div className="not-found__actions">
-          <button id="not-found-home" className="primary" type="button" onClick={() => navigate("/")}>
+          <button id="not-found-home" className="primary" type="button" onClick={() => location.route("/ui/")}>
             返回检索
           </button>
           <button
             id="not-found-back"
             type="button"
             onClick={() => {
-              if (window.history.length > 1) navigate(-1);
-              else navigate("/");
+              if (window.history.length > 1) location.back();
+              else location.route("/ui/");
             }}
           >
             返回上一页

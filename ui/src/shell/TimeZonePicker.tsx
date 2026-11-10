@@ -7,7 +7,7 @@ export function TimeZonePicker({ timezone }: { timezone: string }) {
   return (
     <Select
       id="tz"
-      className="tz-select"
+      class="tz-select"
       aria-label="时区"
       searchable
       placeholder="搜索或选择时区"

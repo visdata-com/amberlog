@@ -6,9 +6,12 @@ export const SCREEN_PATHS: Record<Screen, string> = {
   recon: "/reconciliation",
 };
 
-/** BrowserRouter 使用 /ui 基路径；这里接收的是去掉基路径后的路由路径。 */
+export function isKnownPath(path: string): boolean {
+  return path === "/ui" || path === "/ui/" || Object.values(SCREEN_PATHS).some((screen) => path === `/ui${screen}`);
+}
+
 export function screenFromPath(path: string): Screen {
-  if (path === SCREEN_PATHS.ledger) return "ledger";
-  if (path === SCREEN_PATHS.recon) return "recon";
+  if (path === `/ui${SCREEN_PATHS.ledger}`) return "ledger";
+  if (path === `/ui${SCREEN_PATHS.recon}`) return "recon";
   return "search";
 }
