@@ -1,9 +1,7 @@
 // 轻量自定义下拉：保留 combobox/listbox 语义，不依赖原生 select 的浏览器样式。
 
-import { Button } from "../components/ui/Button.tsx";
-import { Input } from "../components/ui/Input.tsx";
-import type { KeyboardEvent, JSX } from "react";
-import { useEffect, useRef, useState } from "react";
+import type { JSX } from "preact";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 export interface SelectOption {
   value: string;
@@ -16,13 +14,13 @@ export interface SelectProps {
   options: readonly SelectOption[];
   onChange: (value: string) => void;
   "aria-label"?: string;
-  className?: string;
+  class?: string;
   disabled?: boolean;
   searchable?: boolean;
   placeholder?: string;
 }
 
-export function Select({ id, value, options, onChange, "aria-label": ariaLabel, className, disabled = false, searchable = false, placeholder = "请选择" }: SelectProps): JSX.Element {
+export function Select({ id, value, options, onChange, "aria-label": ariaLabel, class: className, disabled = false, searchable = false, placeholder = "请选择" }: SelectProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -73,8 +71,8 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
     setOpen(true);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement | HTMLButtonElement>): void => {
-    if (event.nativeEvent.isComposing) return;
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.isComposing) return;
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -120,13 +118,13 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
   };
 
   return (
-    <div ref={rootRef} className={`custom-select${searchable ? " custom-select--searchable" : ""}${className === undefined ? "" : ` ${className}`}`}>
+    <div ref={rootRef} class={`custom-select${searchable ? " custom-select--searchable" : ""}${className === undefined ? "" : ` ${className}`}`}>
       {searchable ? (
         <>
-          <Input
+          <input
             ref={inputRef}
             id={id}
-            className="custom-select__input"
+            class="custom-select__input"
             role="combobox"
             aria-label={ariaLabel}
             aria-autocomplete="list"
@@ -134,8 +132,8 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
             aria-expanded={open}
             aria-controls={listboxId}
             aria-activedescendant={open && visible[activeIndex] !== undefined ? `${id}-option-${activeIndex}` : undefined}
-            autoComplete="off"
-            spellCheck={false}
+            autocomplete="off"
+            spellcheck={false}
             disabled={disabled}
             placeholder={placeholder}
             value={open ? query : selected?.label ?? value}
@@ -149,14 +147,14 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
             onBlur={() => setOpen(false)}
             onKeyDown={onKeyDown}
           />
-          <span className="custom-select__chevron" aria-hidden="true" />
+          <span class="custom-select__chevron" aria-hidden="true" />
         </>
       ) : (
-        <Button
+        <button
           ref={triggerRef}
           id={id}
           type="button"
-          className="custom-select__trigger"
+          class="custom-select__trigger"
           value={value}
           role="combobox"
           aria-label={ariaLabel}
@@ -171,21 +169,20 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
           }}
           onKeyDown={onKeyDown}
         >
-          <span className="custom-select__value" data-placeholder={selected === undefined && value === ""}>
+          <span class="custom-select__value" data-placeholder={selected === undefined && value === ""}>
             {selected?.label ?? (value || placeholder)}
           </span>
-          <span className="custom-select__chevron" aria-hidden="true" />
-        </Button>
+          <span class="custom-select__chevron" aria-hidden="true" />
+        </button>
       )}
       {open && (
-        <div id={listboxId} className="custom-select__menu" role="listbox" aria-label={ariaLabel}>
-          {visible.length === 0 && <div className="custom-select__empty" role="status">无匹配选项</div>}
+        <div id={listboxId} class="custom-select__menu" role="listbox" aria-label={ariaLabel}>
+          {visible.length === 0 && <div class="custom-select__empty" role="status">无匹配选项</div>}
           {visible.map((option, index) => (
             <div
               key={option.value}
               id={`${id}-option-${index}`}
-              className="custom-select__option"
-              title={option.label}
+              class="custom-select__option"
               role="option"
               aria-selected={option.value === value}
               data-active={index === activeIndex}
@@ -197,7 +194,7 @@ export function Select({ id, value, options, onChange, "aria-label": ariaLabel, 
               }}
             >
               <span>{option.label}</span>
-              {option.value === value && <span className="custom-select__check" aria-hidden="true">✓</span>}
+              {option.value === value && <span class="custom-select__check" aria-hidden="true">✓</span>}
             </div>
           ))}
         </div>

@@ -1,6 +1,6 @@
 // 三屏共用的表格滚动区域；新结果从顶部开始，普通界面更新保留滚动位置。
-import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import type { ComponentChildren as ReactNode } from "preact";
+import { useEffect, useRef } from "preact/hooks";
 import type { Hit } from "../lib/json.ts";
 
 export function TableScroll({ rows, label, children }: { rows: readonly Hit[]; label: string; children: ReactNode }) {

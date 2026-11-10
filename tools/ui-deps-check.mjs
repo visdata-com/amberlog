@@ -3,6 +3,7 @@
 // 检查三件事，任一不合即以非零退出：
 //   1. 来源：ui/pnpm-lock.yaml 中每个包都取自 npm 注册表（只有完整性校验值，没有 git 仓库、tarball 地址或本地路径）；
 //   2. 许可：已安装的全部包（运行时与构建期都算，构建期工具的输出进了产物）的许可都在 deny.toml 的 [licenses] allow 里；
+//      唯一例外是仅用于构建的 caniuse-lite 浏览器数据（CC-BY-4.0）；
 //   3. 声明：生产依赖树（包括间接依赖）在 third-party-notices-bundled.txt 里照录了与锁文件同版本的许可原文。
 
 import { execFileSync } from "node:child_process";
@@ -33,17 +34,20 @@ const allowBlock = /\[licenses\][\s\S]*?\nallow = \[([\s\S]*?)\n\]/.exec(deny);
 if (allowBlock === null) throw new Error("deny.toml 里找不到 [licenses] allow");
 const allow = new Set([...allowBlock[1].matchAll(/^\s*"([^"]+)",/gm)].map((m) => m[1]));
 const listed = JSON.parse(execFileSync("pnpm", ["licenses", "list", "--json"], { cwd: root + "ui", encoding: "utf8" }));
+const runtime = JSON.parse(execFileSync("pnpm", ["licenses", "list", "--prod", "--json"], { cwd: root + "ui", encoding: "utf8" }));
+const runtimeNames = new Set(Object.values(runtime).flat().map((p) => p.name));
 const permitted = (expr) => expr.replace(/[()]/g, "").split(/\s+OR\s+/).some((l) => allow.has(l.trim()));
 let count = 0;
 for (const [license, pkgs] of Object.entries(listed)) {
   for (const p of pkgs) {
     count++;
-    if (!permitted(license)) problems.push(`许可不在白名单：${p.name}@${p.versions.join(",")}（${license}）`);
+    if (!permitted(license) && !(p.name === "caniuse-lite" && license === "CC-BY-4.0" && !runtimeNames.has(p.name))) {
+      problems.push(`许可不在白名单：${p.name}@${p.versions.join(",")}（${license}）`);
+    }
   }
 }
 
 // 3. 运行时依赖的许可声明
-const runtime = JSON.parse(execFileSync("pnpm", ["licenses", "list", "--prod", "--json"], { cwd: root + "ui", encoding: "utf8" }));
 const notices = readFileSync(here("third-party-notices-bundled.txt"), "utf8");
 for (const pkgs of Object.values(runtime)) {
   for (const p of pkgs) {
@@ -59,4 +63,4 @@ if (problems.length > 0) {
   for (const p of problems) console.error("ui-deps-check: " + p);
   process.exit(1);
 }
-console.log(`ui-deps-check: ${count} 个包的许可都在白名单，来源都是 npm 注册表，运行时依赖的许可声明齐全`);
+console.log(`ui-deps-check: ${count} 个包的许可通过检查，来源都是 npm 注册表，运行时依赖的许可声明齐全`);

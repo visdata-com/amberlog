@@ -1,9 +1,7 @@
-import { Button } from "../../components/ui/Button.tsx";
-import { DatasetInput } from "../../shell/DatasetInput.tsx";
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Num, intOf, rawText, toJsonText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US, nowUs } from "../../lib/time.ts";
@@ -16,6 +14,7 @@ import { ResultArea } from "../../shell/ResultArea.tsx";
 import { onTokenConfirmed, settings } from "../../shell/settings.ts";
 import { Time } from "../../shell/Time.tsx";
 import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { DatasetInput } from "../../shell/DatasetInput.tsx";
 import { type Bar, bars, countsByStart, pageRows, total } from "./chart.ts";
 import { type Chip, CondBox } from "./CondBox.tsx";
 import { type Field, isStreamName } from "./fields.ts";
@@ -591,8 +590,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   };
 
   return (
-    <section id="search" className="screen" hidden={hidden}>
-      <div className="query-panel" role="region" aria-label="查询条件">
+    <section id="search" class="screen" hidden={hidden}>
+      <div class="query-panel" role="region" aria-label="查询条件">
         <CondBox
           toolbar={
             <>
@@ -623,10 +622,10 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                   » 字段
                 </button>
               )}
-              <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
+              <button type="button" id="s-query" class="primary query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
                 {req.running ? "查询中" : "查询"}
-              </Button>
-              {pending && <span className="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
+              </button>
+              {pending && <span class="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
               <HistoryPanel
                 sqlEdited={mode === "sql" && sql !== (launched?.mode === "sql" ? launched.query.sql : sqlBase)}
                 onRestore={restore}
@@ -662,17 +661,17 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           }}
         />
         {blocked && (
-          <p className="hint" id="s-limit">
-            {FULLTEXT_LIMIT_TEXT}
-          </p>
+        <p class="hint" id="s-limit">
+          {FULLTEXT_LIMIT_TEXT}
+        </p>
         )}
         {sqlNote && (
-          <p className="hint" id="s-sql-note">
-            {SQL_FULLTEXT_NOTE}
-          </p>
+        <p class="hint" id="s-sql-note">
+          {SQL_FULLTEXT_NOTE}
+        </p>
         )}
       </div>
-      <div className="results">
+      <div class="results">
         {!fieldsCollapsed && (
           <FieldsBar
             fields={table ?? null}
@@ -694,9 +693,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             }}
           />
         )}
-        <div className="card">
-          <div className="info">
-            {view.kind === "idle" && <span className="result-heading">检索结果</span>}
+        <div class="card">
+          <div class="info">
+            {view.kind === "idle" && <span class="result-heading">检索结果</span>}
             <span id="s-total" hidden={view.kind === "idle"}>
               {"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}
             </span>
@@ -708,17 +707,16 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 {info(ok.body)}
               </span>
             )}
-            <span className="spacer" />
+            <span class="spacer" />
             {showHistogramToggle && (
               <button type="button" id="s-hist-toggle" onClick={toggle}>
                 {toggleText}
               </button>
             )}
             {hiddenCols.size > 0 && (
-              <span className="restore" id="s-hidden-cols">
+              <span class="restore" id="s-hidden-cols">
                 {[...hiddenCols].map((c) => (
                   <button
-                    key={c}
                     type="button"
                     onClick={() => setHiddenCols(new Set([...hiddenCols].filter((x) => x !== c)))}
                   >
@@ -727,7 +725,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 ))}
               </span>
             )}
-            <Button
+            <button
               type="button"
               id="s-prev"
               hidden={view.kind === "idle"}
@@ -735,8 +733,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               onClick={() => shown !== null && resend({ ...shown.query, from: Math.max(0, from - SIZE) })}
             >
               上一页
-            </Button>
-            <Button
+            </button>
+            <button
               type="button"
               id="s-next"
               hidden={view.kind === "idle"}
@@ -744,24 +742,24 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               onClick={() => shown !== null && resend({ ...shown.query, from: from + SIZE })}
             >
               下一页
-            </Button>
+            </button>
           </div>
           {mode === "cond" && !collapsed && !emptyChart && (chart.kind === "bars" || chart.kind === "error") && (
-            <div className="hist-area" id="s-hist">
+            <div class="hist-area" id="s-hist">
               {chart.kind === "bars" && (
                 <Histogram name={chart.name} bars={chart.bars} interval={chart.us} range={chart.range} onZoom={zoom} />
               )}
               {chart.kind === "error" && (
-                <div className="message">
-                  {chart.lines.map((l, i) => (
-                    <p key={i}>{l}</p>
+                <div class="message">
+                  {chart.lines.map((l) => (
+                    <p>{l}</p>
                   ))}
                 </div>
               )}
             </div>
           )}
           {ctx !== null && (
-            <div className="context-bar" id="s-context">
+            <div class="context-bar" id="s-context">
               <Time us={ctx.t} />
               <button
                 type="button"
@@ -775,12 +773,12 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 返回检索结果
               </button>
               {ctx.center === null && (
-                <span className="hint" id="s-context-center-missing">
+                <span class="hint" id="s-context-center-missing">
                   {CENTER_MISSING}
                 </span>
               )}
               {ctx.few && (
-                <span className="hint" id="s-context-few">
+                <span class="hint" id="s-context-few">
                   {CONTEXT_FEW}
                 </span>
               )}

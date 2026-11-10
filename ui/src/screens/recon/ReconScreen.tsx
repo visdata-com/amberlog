@@ -1,9 +1,7 @@
 // 对账屏（REQ-AMB-UI-GOVERNANCE 对账屏一组）：查某数据集的 `_reconciliation`，每个 hit 一行（不补没有计数的分钟）；
 // 三个计数、两个差值、判定所比的两个数与判定列，「只看非一致」，常显说明文字。不设时间范围上限、不翻页。
 
-import { Checkbox } from "../../components/ui/Checkbox.tsx";
-import { Button } from "../../components/ui/Button.tsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US } from "../../lib/time.ts";
@@ -11,7 +9,6 @@ import { datasets } from "../../shell/datasets.ts";
 import { entries, show } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
-import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
 import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
 import { DatasetInput } from "../../shell/DatasetInput.tsx";
@@ -58,45 +55,43 @@ function CountOr({ v, absent }: { v: Json | undefined; absent: string }) {
 
 function ReconTable({ hits }: { hits: Hit[] }) {
   return (
-    <TableScroll rows={hits} label="数据对账表格">
-      <table className="recon" aria-label="数据对账结果">
-        <thead>
-          <tr>
-            <th><TimeHeader label="窗口起点" /></th>
-            <th>发送数</th>
-            <th>发送来源</th>
-            <th>接收数</th>
-            <th>本地持久化确认数</th>
-            <th>「采集器 → 接收」差值</th>
-            <th>「接收 → 本地持久化」差值</th>
-            <th>按时间戳的发送数</th>
-            <th>按时间戳的确认数</th>
-            <th>判定</th>
-          </tr>
-        </thead>
-        <tbody>
-          {hits.map((h) => {
-            const g = (k: string): Json | undefined => h.get(k);
-            const ws = intOf(g("window_start"));
-            const sources = g("sent_sources");
-            return (
-              <tr key={rawText(g("window_start"))}>
-                <td>{ws !== null ? <Time us={ws} /> : rawText(g("window_start"))}</td>
-                <td className="num"><CountOr v={g("sent")} absent="未上报" /></td>
-                <td>{sources === null || sources === undefined ? "—" : rawText(sources)}</td>
-                <td className="num"><Count v={g("received")} /></td>
-                <td className="num"><Count v={g("durable")} /></td>
-                <td className="num"><CountOr v={g("gap_sent_received")} absent="—" /></td>
-                <td className="num"><Count v={g("gap_received_durable")} /></td>
-                <td className="num"><CountOr v={g("ts_sent")} absent="—" /></td>
-                <td className="num"><CountOr v={g("ts_durable")} absent="—" /></td>
-                <td>{verdictText(g("verdict"))}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </TableScroll>
+    <table class="recon" aria-label="数据对账结果">
+      <thead>
+        <tr>
+          <th><TimeHeader label="窗口起点" /></th>
+          <th>发送数</th>
+          <th>发送来源</th>
+          <th>接收数</th>
+          <th>本地持久化确认数</th>
+          <th>「采集器 → 接收」差值</th>
+          <th>「接收 → 本地持久化」差值</th>
+          <th>按时间戳的发送数</th>
+          <th>按时间戳的确认数</th>
+          <th>判定</th>
+        </tr>
+      </thead>
+      <tbody>
+        {hits.map((h) => {
+          const g = (k: string): Json | undefined => h.get(k);
+          const ws = intOf(g("window_start"));
+          const sources = g("sent_sources");
+          return (
+            <tr>
+              <td>{ws !== null ? <Time us={ws} /> : rawText(g("window_start"))}</td>
+              <td class="num"><CountOr v={g("sent")} absent="未上报" /></td>
+              <td>{sources === null || sources === undefined ? "—" : rawText(sources)}</td>
+              <td class="num"><Count v={g("received")} /></td>
+              <td class="num"><Count v={g("durable")} /></td>
+              <td class="num"><CountOr v={g("gap_sent_received")} absent="—" /></td>
+              <td class="num"><Count v={g("gap_received_durable")} /></td>
+              <td class="num"><CountOr v={g("ts_sent")} absent="—" /></td>
+              <td class="num"><CountOr v={g("ts_durable")} absent="—" /></td>
+              <td>{verdictText(g("verdict"))}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -131,9 +126,9 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
     };
   }, []);
   return (
-    <section id="recon" className="screen" hidden={hidden}>
-      <p className="notice" id="r-notice">{NOTE}</p>
-      <div className="bar">
+    <section id="recon" class="screen" hidden={hidden}>
+      <p class="notice" id="r-notice">{NOTE}</p>
+      <div class="bar">
         <DatasetInput
           id="r-dataset"
           listId="r-datasets"
@@ -143,17 +138,18 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
           onInput={(value) => setDataset(value)}
         />
         <TimeRangeInputs range={range} prefix="r" />
-        <label className="field">
-          <Checkbox
+        <label class="field">
+          <input
+            type="checkbox"
             id="r-only-nonconsistent"
             checked={onlyNonConsistent}
             onChange={(e) => setOnlyNonConsistent(e.currentTarget.checked)}
           />
           只看非一致
         </label>
-        <Button id="r-query" variant="primary" disabled={req.queryDisabled} onClick={() => query(dataset)}>
+        <button type="button" id="r-query" class="primary" disabled={req.queryDisabled} onClick={() => query(dataset)}>
           {req.running ? "查询中" : "查询"}
-        </Button>
+        </button>
       </div>
       <ResultArea
         req={req}

@@ -1,4 +1,4 @@
-//! 检索界面（REQ-AMB-UI-CONSOLE）：`GET /ui` 返回 React 工作台，HTML、JS、CSS 均编译时嵌入二进制。
+//! 检索界面（REQ-AMB-UI-CONSOLE）：`GET /ui` 返回 Preact 工作台，HTML、JS、CSS 均编译时嵌入二进制。
 //!
 //! 页面是仓根 `ui/` 前端工程的构建产物（ADR-0055）：改 `ui/src/` 后在 `ui/` 下执行 `pnpm build` 重新生成
 //! 本文件旁的 `ui/` 资源目录并一起提交，Rust 构建不调 Node，部署无需静态文件目录。页面是浏览器里的 `_search` 客户端：检索、台账、对账三屏的数据只经
@@ -25,7 +25,7 @@ struct Asset {
 
 include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 
-/// 前端页面统一交给 React Router；资源只提供实际嵌入的文件，不影响 /api 等其他前缀。
+/// 前端页面统一交给 Preact 路由；资源只提供实际嵌入的文件，不影响 /api 等其他前缀。
 pub fn router() -> Router {
     let mut routes = Router::new()
         .route("/ui", Endpoint::new().get(page).into())
