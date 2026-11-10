@@ -90,7 +90,7 @@ pnpm check                         # rebuilds and compares byte for byte with th
 cd .. && node tools/ui-deps-check.mjs   # licenses and sources of the front-end dependencies
 ```
 
-For development, run the Rust service on port 8800 and `pnpm dev` in `ui/`, then open `http://127.0.0.1:5173/ui/`. Vite proxies `/api` to the service and updates the UI on save; set `AMBERLOG_API_ORIGIN` to use a different backend. The production entry remains `/ui`; all resources are embedded in the binary, so users do not install Node or deploy a resource directory or reverse proxy. The build budget is 512 KiB total raw / 192 KiB gzip for all generated assets, replacing the single-HTML 200 KiB limit. Raise it only with an explanation in the pull request.
+For development, run the Rust service on port 8800 and `pnpm dev` in `ui/`, then open `http://127.0.0.1:5173/ui/`. Vite proxies `/api/`, `/healthz`, and `/readyz` to the service and updates the UI on save. To use a different backend, copy `ui/.env.example` to `ui/.env.local`, or set `UI_BACKEND_URL` when starting Vite. Shell variables take precedence over environment files; `AMBERLOG_API_ORIGIN` remains the fallback. The target must be an HTTP(S) origin without credentials, a path, query or fragment. Restart Vite after changing it. Run `pnpm test:dev` to check the proxy, entry redirects and file updates. Development requests preserve the page token; use a development backend and storage. The Preact plugin and existing `/ui` redirect remain enabled. Starting the dev server does not modify the embedded production assets. The production entry remains `/ui`; all resources are embedded in the binary, so users do not install Node or deploy a resource directory or reverse proxy. The build budget is 512 KiB total raw / 192 KiB gzip for all generated assets. Raise it only with an explanation in the pull request.
 
 If the build output conflicts in a merge, take either side, merge the source, then rebuild; do not merge the output by hand.
 
@@ -218,7 +218,7 @@ pnpm check                         # 重新构建并与提交的产物逐字节�
 cd .. && node tools/ui-deps-check.mjs   # 前端依赖的许可与来源
 ```
 
-开发时先在 8800 端口启动 Rust 服务，再在 `ui/` 执行 `pnpm dev`，打开 `http://127.0.0.1:5173/ui/`。Vite 代理 `/api`，保存源码即可更新；后端地址可用 `AMBERLOG_API_ORIGIN` 修改。正式入口仍为 `/ui`。全部资源嵌入二进制，用户无需安装 Node、部署资源目录或配置反向代理。多文件产物预算为全部资源原始体积 512 KiB / gzip 192 KiB，代替单个 HTML 的 200 KiB 限额；提高预算需在 PR 中说明。
+开发时先在 8800 端口启动 Rust 服务，再在 `ui/` 执行 `pnpm dev`，打开 `http://127.0.0.1:5173/ui/`。Vite 代理 `/api/`、`/healthz` 和 `/readyz`，保存源码即可更新。后端地址可通过复制 `ui/.env.example` 为 `ui/.env.local` 后修改，或启动时设置 `UI_BACKEND_URL`；shell 环境变量优先于文件，`AMBERLOG_API_ORIGIN` 保留为后备选项。地址只接受 HTTP(S) 来源，不含凭据、路径、查询串或片段，修改后需重启 Vite。`pnpm test:dev` 验证代理、入口跳转与文件更新行为。请求会保留页面令牌，请连接开发实例和开发存储。继续使用 Preact 插件，并保留 `/ui` 的跳转处理；启动开发服务不会修改生产嵌入资源。正式入口仍为 `/ui`。全部资源嵌入二进制，用户无需安装 Node、部署资源目录或配置反向代理。多文件产物预算为全部资源原始体积 512 KiB / gzip 192 KiB；提高预算需在 PR 中说明。
 
 产物合并冲突时，取任一边，合完源码后重新构建，不要手工合并。
 
