@@ -1,7 +1,7 @@
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Num, intOf, rawText, toJsonText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US, nowUs } from "../../lib/time.ts";
@@ -584,19 +584,19 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   };
 
   return (
-    <section id="search" className="screen" hidden={hidden}>
-      <div className="bar">
+    <section id="search" class="screen" hidden={hidden}>
+      <div class="bar">
         <input
           id="s-stream"
           list="s-streams"
-          autoComplete="off"
+          autocomplete="off"
           aria-label="数据集"
           value={stream}
           onInput={(e) => {
             const v = e.currentTarget.value;
             changeStream(v);
             // 从候选中选定（不是逐字输入）即确定数据集
-            const kind = (e.nativeEvent as InputEvent).inputType;
+            const kind = (e as InputEvent).inputType;
             if (kind === undefined || kind === "insertReplacementText") determine(v, true);
           }}
           onBlur={(e) => determine(e.currentTarget.value, true)}
@@ -606,7 +606,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
         />
         <datalist id="s-streams">
           {list.map((d) => (
-            <option key={d} value={streamOf(d)} />
+            <option value={streamOf(d)} />
           ))}
         </datalist>
         <TimeRangeInputs range={range} prefix="s" />
@@ -623,7 +623,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           </button>
         )}
       </div>
-      <div className="bar">
+      <div class="bar">
         <CondBox
           mode={mode}
           chips={chips}
@@ -653,26 +653,26 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             }
           }}
         />
-        <button type="button" id="s-query" className="primary" disabled={req.queryDisabled || blocked} onClick={launch}>
+        <button type="button" id="s-query" class="primary" disabled={req.queryDisabled || blocked} onClick={launch}>
           {req.running ? "查询中" : "查询"}
         </button>
-        {pending && <span className="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
+        {pending && <span class="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
         <HistoryPanel
           sqlEdited={mode === "sql" && sql !== (launched?.mode === "sql" ? launched.query.sql : sqlBase)}
           onRestore={restore}
         />
       </div>
       {blocked && (
-        <p className="hint" id="s-limit">
+        <p class="hint" id="s-limit">
           {FULLTEXT_LIMIT_TEXT}
         </p>
       )}
       {sqlNote && (
-        <p className="hint" id="s-sql-note">
+        <p class="hint" id="s-sql-note">
           {SQL_FULLTEXT_NOTE}
         </p>
       )}
-      <div className="results">
+      <div class="results">
       {!fieldsCollapsed && (
         <FieldsBar
           fields={table ?? null}
@@ -694,19 +694,18 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           }}
         />
       )}
-      <div className="card">
-        <div className="info">
+      <div class="card">
+        <div class="info">
           <span id="s-total">{"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}</span>
           {ok !== null && ctx === null && <span id="s-info">{info(ok.body)}</span>}
-          <span className="spacer" />
+          <span class="spacer" />
           <button type="button" id="s-hist-toggle" disabled={mode === "sql"} onClick={toggle}>
             {toggleText}
           </button>
           {hiddenCols.size > 0 && (
-            <span className="restore" id="s-hidden-cols">
+            <span class="restore" id="s-hidden-cols">
               {[...hiddenCols].map((c) => (
                 <button
-                  key={c}
                   type="button"
                   onClick={() => setHiddenCols(new Set([...hiddenCols].filter((x) => x !== c)))}
                 >
@@ -733,19 +732,19 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           </button>
         </div>
         {mode === "cond" && !collapsed && chart.kind !== "busy" && (
-          <div className="hist-area" id="s-hist">
+          <div class="hist-area" id="s-hist">
             {chart.kind === "bars" && <Histogram name={chart.name} bars={chart.bars} onZoom={zoom} />}
             {chart.kind === "error" && (
-              <div className="message">
-                {chart.lines.map((l, i) => (
-                  <p key={i}>{l}</p>
+              <div class="message">
+                {chart.lines.map((l) => (
+                  <p>{l}</p>
                 ))}
               </div>
             )}
           </div>
         )}
         {ctx !== null && (
-          <div className="context-bar" id="s-context">
+          <div class="context-bar" id="s-context">
             <Time us={ctx.t} />
             <button
               type="button"
@@ -759,12 +758,12 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               返回检索结果
             </button>
             {ctx.center === null && (
-              <span className="hint" id="s-context-center-missing">
+              <span class="hint" id="s-context-center-missing">
                 {CENTER_MISSING}
               </span>
             )}
             {ctx.few && (
-              <span className="hint" id="s-context-few">
+              <span class="hint" id="s-context-few">
                 {CONTEXT_FEW}
               </span>
             )}

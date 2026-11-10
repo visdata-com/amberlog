@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv, type ConfigEnv, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
+import preact from "@preact/preset-vite";
 
 const root = fileURLToPath(new URL("./", import.meta.url));
 
@@ -47,7 +47,7 @@ export default defineConfig(({ mode, envDir = root }: ConfigEnv & { envDir?: str
     // The proxy target is server configuration, not a browser environment variable.
     envPrefix: "AMBERLOG_UI_PUBLIC_UNUSED_",
     cacheDir: fileURLToPath(new URL("./node_modules/.vite", import.meta.url)),
-    plugins: [react(), normalizeUiEntry()],
+    plugins: [preact({ reactAliasesEnabled: false }), normalizeUiEntry()],
     build: {
       target: "es2022",
       manifest: true,

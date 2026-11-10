@@ -1,7 +1,7 @@
 // 检索屏的条件框（REQ-AMB-UI-SEARCH-V2-MODES、FIELD-COND、TEXT-COND、COND-REMOVE、STAGED、INPUT-HINTS、TO-SQL、TO-COND）：
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
-import { type KeyboardEvent, type SyntheticEvent, useState } from "react";
+import { useState } from "preact/hooks";
 import { fieldBeforeOp } from "./fields.ts";
 import type { ValueRow } from "./FieldsBar.tsx";
 import { type Condition, type FieldOp, parseCondition, valueText } from "./sql.ts";
@@ -93,7 +93,7 @@ export function CondBox(p: CondBoxProps) {
       setPick(-1);
     }
   };
-  const onKey = (e: KeyboardEvent<HTMLInputElement>): void => {
+  const onKey = (e: KeyboardEvent): void => {
     if (e.key === "ArrowDown" && hints.length > 0) {
       e.preventDefault();
       setPick((pick + 1) % hints.length);
@@ -111,11 +111,11 @@ export function CondBox(p: CondBoxProps) {
       p.onRemove(p.chips[p.chips.length - 1]!.id);
     }
   };
-  const cursorOf = (e: SyntheticEvent<HTMLTextAreaElement>): void => p.onCursor(e.currentTarget.selectionStart);
+  const cursorOf = (e: Event): void => p.onCursor((e.currentTarget as HTMLTextAreaElement).selectionStart);
 
   return (
-    <div className="condbox">
-      <span className="modes">
+    <div class="condbox">
+      <span class="modes">
         <button type="button" id="s-mode-cond" aria-pressed={p.mode === "cond"} onClick={() => p.onMode("cond")}>
           条件
         </button>
@@ -124,20 +124,20 @@ export function CondBox(p: CondBoxProps) {
         </button>
       </span>
       {p.mode === "cond" ? (
-        <div className="chips" id="s-conds">
+        <div class="chips" id="s-conds">
           {p.chips.map((c) => (
-            <span key={c.id} className={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
-              <span className="chip-text" data-verbatim>{chipText(c.cond)}</span>
-              <button type="button" className="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
+            <span class={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
+              <span class="chip-text" data-verbatim>{chipText(c.cond)}</span>
+              <button type="button" class="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
                 ×
               </button>
             </span>
           ))}
-          <span className="cond-input">
+          <span class="cond-input">
             <input
               id="s-cond-input"
-              autoComplete="off"
-              spellCheck={false}
+              autocomplete="off"
+              spellcheck={false}
               aria-label="条件"
               value={input}
               onInput={(e) => {
@@ -150,13 +150,12 @@ export function CondBox(p: CondBoxProps) {
               onKeyDown={onKey}
             />
             {hints.length > 0 && (
-              <ul className="hints" id="s-hints" role="listbox">
+              <ul class="hints" id="s-hints" role="listbox">
                 {hints.map((h, i) => (
                   <li
-                    key={h.kind + ":" + hintText(h)}
                     role="option"
                     aria-selected={i === pick}
-                    className={h.kind}
+                    class={h.kind}
                     data-verbatim={h.kind === "field" || h.kind === "value"}
                     // mousedown 先于输入框的 blur：在这里选，免得提示先被收起
                     onMouseDown={(e) => {
@@ -174,7 +173,7 @@ export function CondBox(p: CondBoxProps) {
       ) : (
         <textarea
           id="s-sql"
-          spellCheck={false}
+          spellcheck={false}
           aria-label="SQL"
           value={p.sql}
           onInput={(e) => p.onSql(e.currentTarget.value, e.currentTarget.selectionStart)}
@@ -184,7 +183,7 @@ export function CondBox(p: CondBoxProps) {
         />
       )}
       {p.confirming && (
-        <div className="confirm" id="s-confirm">
+        <div class="confirm" id="s-confirm">
           <span>切回条件会放弃对 SQL 的修改</span>
           <button type="button" id="s-confirm-discard" onClick={() => p.onConfirm(true)}>
             放弃修改并切回
