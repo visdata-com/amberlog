@@ -215,6 +215,12 @@ impl Browser {
         self.target = target.to_owned();
         self.call("Network.enable", json!({}));
         self.call("Page.enable", json!({}));
+        // 无头或后台标签页可能没有焦点，focus()/blur() 因而不产生 focusin/focusout。
+        // 模拟前台页面，确保测试中的口令确认等焦点交互确实发生。
+        self.call(
+            "Emulation.setFocusEmulationEnabled",
+            json!({"enabled": true}),
+        );
         if let Some(tz) = self.timezone.clone() {
             self.call("Emulation.setTimezoneOverride", json!({"timezoneId": tz}));
         }

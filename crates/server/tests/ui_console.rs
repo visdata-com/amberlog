@@ -21,6 +21,13 @@ const T: i64 = 1_792_137_600_000_000;
 
 const CANCELLED: &str = "已取消。服务端可能仍在执行这次查询，马上重查可能提示服务繁忙";
 
+/// 仅允许当前 HTML 声明的嵌入资源，不能放行任意 /ui/assets/* 请求。
+fn page_assets(page: &str) -> Vec<&str> {
+    page.split('"')
+        .filter(|part| part.starts_with("/ui/assets/"))
+        .collect()
+}
+
 fn around_now() -> (i64, i64) {
     let now = now_us();
     (now - HOUR_US, now + 1_000_000)
@@ -76,10 +83,16 @@ fn ui_console_page_requests() {
     let r = s.get("/ui");
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
-    // 请求记录记不到 Worker 发出的请求：页面全文不得用到这几种发请求的手段
+    // 请求记录记不到 Worker 发出的请求：页面与 JS 全文不得用到这些手段。
     let page = r.text();
+    let assets = page_assets(&page);
+    assert!(assets.iter().any(|path| path.ends_with(".js")));
+    assert!(assets.iter().any(|path| path.ends_with(".css")));
     for word in ["WebSocket", "Worker", "sendBeacon", "EventSource"] {
         assert!(!page.contains(word), "页面含 {word}");
+        for path in &assets {
+            assert!(!s.get(path).text().contains(word), "{path} 含 {word}");
+        }
     }
     let mut b = open(&s);
     std::thread::sleep(Duration::from_secs(5));
@@ -87,14 +100,16 @@ fn ui_console_page_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            r.path() != "/ui" && !(r.method == "POST" && r.path() == "/api/default/_search")
+            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
+                && !(r.method == "POST" && r.path() == "/api/default/_search")
         })
         .map(|r| format!("{} {}", r.method, r.url))
         .collect();
     assert_eq!(others, Vec::<String>::new());
 }
 
-/// 查询串不影响结果，`/ui/` 等其他路径为未注册路径（REQ-AMB-UI-CONSOLE-PAGE；后者按 REQ-AMB-ERR-ENVELOPE，不对应块场景）。
+/// 查询串不影响入口（REQ-AMB-UI-CONSOLE-PAGE）；入口和已声明的构建资源可访问，
+/// 其他页面、文件和源码路径仍按 REQ-AMB-ERR-ENVELOPE 返回 404。
 #[test]
 fn ui_console_page_path_exact() {
     let (_fx, s) = start(&[]);
@@ -102,7 +117,18 @@ fn ui_console_page_path_exact() {
     let q = s.get("/ui?x=1#y");
     assert_eq!(q.status, 200);
     assert_eq!(q.text(), page);
-    for p in ["/ui/", "/ui/index.html", "/ui/assets/app.js"] {
+    for path in ["/ui/"] {
+        let r = s.get(path);
+        assert_eq!(r.status, 404, "{path}");
+    }
+    for p in [
+        "/ui/index.html",
+        "/ui/assets/app.js",
+        "/ui/assets/missing",
+        "/ui/src/main.tsx",
+        "/ui/.vite/manifest.json",
+        "/uix/settings",
+    ] {
         assert_eq!(s.get(p).status, 404, "{p}");
     }
 }
@@ -110,6 +136,8 @@ fn ui_console_page_path_exact() {
 #[test]
 fn ui_console_no_external_requests() {
     let (_fx, s) = start(&[]);
+    let page = s.get("/ui").text();
+    let assets = page_assets(&page);
     ingest_ok(&s, "app", r#"[{"msg":"hello"},{"msg":"world"}]"#);
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
@@ -130,7 +158,7 @@ fn ui_console_no_external_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            r.path() != "/ui"
+            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
                 && !(r.method == "POST" && r.path() == "/api/default/_search")
                 && !(r.method == "GET" && r.path() == "/api/default/app/_fields")
         })

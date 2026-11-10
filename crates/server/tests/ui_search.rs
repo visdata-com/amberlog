@@ -1866,9 +1866,18 @@ fn ui_search_detail_add_sql_cursor() {
     b.fill("s-sql", text);
     let at = text.find("WHERE ").unwrap() + "WHERE ".len();
     b.eval(&format!(
-        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({at}, {at}); \
-         e.dispatchEvent(new Event('select', {{bubbles: true}})); }})()"
+        "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({}, {}); }})()",
+        text.len(), text.len()
     ));
+    // 用真实键盘事件移动光标，使浏览器触发输入框的选择事件。
+    for _ in at..text.len() {
+        for kind in ["keyDown", "keyUp"] {
+            b.call(
+                "Input.dispatchKeyEvent",
+                json!({"type": kind, "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37}),
+            );
+        }
+    }
     open_detail(&mut b, 1);
     detail_add(&mut b, "host", "add-eq");
     assert_eq!(
