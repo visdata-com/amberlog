@@ -43,6 +43,7 @@ const inInput = (e: KeyboardEvent): boolean => {
 
 export function Detail(p: DetailProps) {
   const { timezone } = useStore(settings);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<"fields" | "json">("fields");
   const [filter, setFilter] = useState("");
   const [edge, setEdge] = useState<string | null>(null);
@@ -94,7 +95,18 @@ export function Detail(p: DetailProps) {
   };
 
   return (
-    <div id="s-detail" class="detail" role="dialog" aria-label="单条详情" tabIndex={-1}>
+    <>
+      <button type="button" class="detail-backdrop" aria-label="关闭详情" onClick={p.onClose} />
+      <div
+        id="s-detail"
+        ref={dialogRef}
+        class="detail"
+        role="dialog"
+        aria-modal="true"
+        aria-label="单条详情"
+        tabIndex={-1}
+        autoFocus
+      >
       <header class="detail-head">
         <span id="s-detail-pos">{"第 " + (p.index + 1) + " / " + n + " 行"}</span>
         {ts !== null && (
@@ -165,7 +177,7 @@ export function Detail(p: DetailProps) {
             class="detail-filter"
             autocomplete="off"
             aria-label="筛选字段"
-            placeholder="筛选"
+            placeholder="筛选字段名或值"
             value={filter}
             onInput={(e) => setFilter(e.currentTarget.value)}
           />
@@ -214,6 +226,7 @@ export function Detail(p: DetailProps) {
           {prettyJson(hit)}
         </pre>
       )}
-    </div>
+      </div>
+    </>
   );
 }

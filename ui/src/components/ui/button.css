@@ -1,0 +1,45 @@
+.ui-button {
+  min-height: var(--control-height);
+  padding-inline: var(--space-2);
+  font-size: var(--font-size-base);
+  border: var(--border-width) var(--border-style) var(--line-control);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--link);
+}
+
+.ui-button--primary {
+  background: var(--button);
+  border-color: var(--button);
+  color: var(--ui-button-primary-text, var(--button-text));
+}
+
+:root[data-theme="dark"] .ui-button--primary {
+  --ui-button-primary-text: #111713;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-button--primary {
+    --ui-button-primary-text: #111713;
+  }
+}
+
+.ui-button--primary:enabled:hover {
+  background: var(--button-hover);
+  border-color: var(--button-hover);
+}
+
+.ui-button--primary:enabled:active {
+  background: var(--button-active);
+  border-color: var(--button-active);
+}
+
+.ui-button--secondary:enabled:hover {
+  background: var(--hover-bg);
+  border-color: var(--muted);
+}
+
+.ui-button--secondary:enabled:active {
+  background: var(--hover-bg);
+  border-color: var(--link);
+}

@@ -3,12 +3,14 @@
 
 import { useLayoutEffect } from "preact/hooks";
 import { useLocation } from "preact-iso";
+import { Input } from "./components/ui/Input.tsx";
 import { useStore } from "./lib/store.ts";
 import { SCREEN_PATHS, screenFromPath } from "./shell/routes.ts";
 import { LedgerScreen } from "./screens/ledger/LedgerScreen.tsx";
 import { ReconScreen } from "./screens/recon/ReconScreen.tsx";
 import { SearchScreen } from "./screens/search/SearchScreen.tsx";
 import { TimeZonePicker } from "./shell/TimeZonePicker.tsx";
+import { Select } from "./shell/Select.tsx";
 import {
   confirmToken,
   setScreen,
@@ -40,40 +42,44 @@ export function applyTheme(theme: Theme): void {
 function TopBar() {
   const s = useStore(settings);
   return (
-    <header class="topbar">
-      <span class="brand">Amberlog</span>
+    <header className="topbar">
+      <span className="brand">Amberlog</span>
       <nav>
         {SCREENS.map((x) => (
-          <button type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
+          <button key={x.id} type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
             {x.label}
           </button>
         ))}
       </nav>
-      <span class="spacer" />
-      <label class="field">
+      <span className="spacer" />
+      <label className="field">
         <span>时区</span>
         <TimeZonePicker timezone={s.timezone} />
       </label>
       {s.tzUnknown && (
-        <span class="hint" id="tz-hint">
+        <span className="hint" id="tz-hint">
           服务端不认识所选时区，请改选其他时区
         </span>
       )}
-      <label class="field">
+      <label className="field">
         <span>外观</span>
-        <select id="theme" value={s.theme} onChange={(e) => setTheme(e.currentTarget.value as Theme)}>
-          {THEMES.map((t) => (
-            <option value={t.id}>{t.label}</option>
-          ))}
-        </select>
+        <Select
+          id="theme"
+          aria-label="外观"
+          placeholder="选择外观"
+          value={s.theme}
+          options={THEMES.map((theme) => ({ value: theme.id, label: theme.label }))}
+          onChange={(value) => setTheme(value as Theme)}
+        />
       </label>
-      <label class="field">
+      <label className="field">
         <span>口令</span>
-        <input
+        <Input
           id="token"
           type="password"
-          autocomplete="off"
-          class={s.tokenInvalid ? "invalid" : undefined}
+          autoComplete="off"
+          placeholder="输入访问口令"
+          className={s.tokenInvalid ? "invalid" : undefined}
           aria-invalid={s.tokenInvalid}
           value={s.token}
           onInput={(e) => setToken(e.currentTarget.value)}
@@ -83,11 +89,11 @@ function TopBar() {
           }}
         />
       </label>
-      <span class="note" id="token-note">
+      <span className="note" id="token-note">
         只保存在本标签页，关闭即清除
       </span>
       {s.tokenInvalid && (
-        <span class="hint" id="token-hint">
+        <span className="hint" id="token-hint">
           口令无效或未填写
         </span>
       )}
@@ -108,13 +114,13 @@ export function App() {
     });
   }, [screen, route]);
   return (
-    <>
+    <div className={screen === "search" ? "app-shell" : "app-shell app-shell--fill"}>
       <TopBar />
       <main>
         <SearchScreen hidden={screen !== "search"} />
         <LedgerScreen hidden={screen !== "ledger"} />
         <ReconScreen hidden={screen !== "recon"} />
       </main>
-    </>
+    </div>
   );
 }

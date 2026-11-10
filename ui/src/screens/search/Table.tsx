@@ -50,7 +50,7 @@ export interface TableProps {
 export function Table(p: TableProps) {
   const cols = columnsOf(p.hits).filter((c) => !p.hidden.has(c));
   return (
-    <table class="hits">
+    <table class="hits" aria-label="检索结果">
       <thead>
         <tr>
           {cols.map((c) => (
@@ -79,7 +79,10 @@ export function Table(p: TableProps) {
             class={[i === p.viewed ? "viewed" : "", i === p.center ? "center" : ""].join(" ").trim() || undefined}
             onClick={() => p.onOpen(i)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") p.onOpen(i);
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                p.onOpen(i);
+              }
             }}
           >
             {cols.map((c) =>

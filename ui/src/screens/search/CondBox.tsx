@@ -1,6 +1,8 @@
 // 检索屏的条件框（REQ-AMB-UI-SEARCH-V2-MODES、FIELD-COND、TEXT-COND、COND-REMOVE、STAGED、INPUT-HINTS、TO-SQL、TO-COND）：
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
+import { Input } from "../../components/ui/Input.tsx";
+import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import { fieldBeforeOp } from "./fields.ts";
 import type { ValueRow } from "./FieldsBar.tsx";
@@ -49,6 +51,7 @@ const hintText = (h: Hint): string =>
   h.kind === "field" ? h.name : h.kind === "op" ? h.op : h.kind === "value" ? h.text : FULLTEXT_HINT;
 
 export interface CondBoxProps {
+  toolbar?: ComponentChildren;
   mode: "cond" | "sql";
   chips: readonly Chip[];
   /** 已生效的条件（上一次发起检索时条件框中的那些）。 */
@@ -115,66 +118,82 @@ export function CondBox(p: CondBoxProps) {
 
   return (
     <div class="condbox">
-      <span class="modes">
-        <button type="button" id="s-mode-cond" aria-pressed={p.mode === "cond"} onClick={() => p.onMode("cond")}>
-          条件
-        </button>
-        <button type="button" id="s-mode-sql" aria-pressed={p.mode === "sql"} onClick={() => p.onMode("sql")}>
-          SQL
-        </button>
-      </span>
+      <div class="query-header">
+        <span class="modes">
+          <button type="button" id="s-mode-cond" aria-pressed={p.mode === "cond"} onClick={() => p.onMode("cond")}>
+            条件
+          </button>
+          <button type="button" id="s-mode-sql" aria-pressed={p.mode === "sql"} onClick={() => p.onMode("sql")}>
+            SQL
+          </button>
+        </span>
+        <div class="query-actions">{p.toolbar}</div>
+      </div>
       {p.mode === "cond" ? (
-        <div class="chips" id="s-conds">
-          {p.chips.map((c) => (
-            <span class={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
-              <span class="chip-text" data-verbatim>{chipText(c.cond)}</span>
-              <button type="button" class="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
-                ×
-              </button>
-            </span>
-          ))}
-          <span class="cond-input">
-            <input
+        <div class="condition-editor">
+          <div class="chips" id="s-conds">
+            {p.chips.map((c) => (
+              <span key={c.id} class={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
+                <span class="chip-text" data-verbatim title={chipText(c.cond)}>{chipText(c.cond)}</span>
+                <button type="button" class="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
+                  ×
+                </button>
+              </span>
+            ))}
+            <span class="cond-input">
+              <Input
+              variant="embedded"
               id="s-cond-input"
-              autocomplete="off"
+              autoComplete="off"
               spellcheck={false}
               aria-label="条件"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={hints.length > 0}
+              aria-controls={hints.length > 0 ? "s-hints" : undefined}
+              aria-activedescendant={hints[pick] !== undefined ? "s-hint-" + pick : undefined}
+              placeholder="输入关键词或字段条件，回车添加"
               value={input}
               onInput={(e) => {
                 setInput(e.currentTarget.value);
                 setOpen(true);
                 setPick(-1);
               }}
-              onFocus={() => setOpen(true)}
+              onFocus={() => {
+                setOpen(true);
+                setPick(-1);
+              }}
               onBlur={() => setOpen(false)}
               onKeyDown={onKey}
             />
-            {hints.length > 0 && (
-              <ul class="hints" id="s-hints" role="listbox">
-                {hints.map((h, i) => (
-                  <li
-                    role="option"
-                    aria-selected={i === pick}
-                    class={h.kind}
-                    data-verbatim={h.kind === "field" || h.kind === "value"}
-                    // mousedown 先于输入框的 blur：在这里选，免得提示先被收起
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      choose(h);
-                    }}
-                  >
-                    {hintText(h)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </span>
+              {hints.length > 0 && (
+                <ul class="hints" id="s-hints" role="listbox">
+                  {hints.map((h, i) => (
+                    <li
+                      id={`s-hint-${i}`}
+                      role="option"
+                      aria-selected={i === pick}
+                      class={h.kind}
+                      data-verbatim={h.kind === "field" || h.kind === "value"}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        choose(h);
+                      }}
+                    >
+                      {hintText(h)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </span>
+          </div>
         </div>
       ) : (
         <textarea
           id="s-sql"
           spellcheck={false}
           aria-label="SQL"
+          placeholder="输入 SQL，如 SELECT * FROM app"
           value={p.sql}
           onInput={(e) => p.onSql(e.currentTarget.value, e.currentTarget.selectionStart)}
           onClick={cursorOf}

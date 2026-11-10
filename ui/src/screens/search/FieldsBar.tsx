@@ -50,6 +50,7 @@ export function FieldsBar(p: FieldsBarProps) {
           autocomplete="off"
           spellcheck={false}
           aria-label="筛选字段"
+          placeholder="筛选字段名称"
           value={filter}
           onInput={(e) => setFilter(e.currentTarget.value)}
         />
@@ -69,9 +70,9 @@ export function FieldsBar(p: FieldsBarProps) {
         // 筛选时组内匹配的字段照样列出，不论组是否收起（FIELDS-FILTER）
         const open = filter !== "" || p.open.has(key);
         return (
-          <section class="fgroup" data-group={key}>
+          <section key={key} class="fgroup" data-group={key}>
             <button type="button" class="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
-              <span class="fgroup-name">{g.name ?? "记录字段"}</span>
+              <span class="fgroup-name" title={g.name ?? "记录字段"}>{g.name ?? "记录字段"}</span>
               <span class="fcount">{g.fields.length}</span>
             </button>
             {open &&
@@ -79,7 +80,7 @@ export function FieldsBar(p: FieldsBarProps) {
                 const v = p.values.get(f.name);
                 const expandable = f.name !== "_timestamp" && (v !== undefined || p.canExpand);
                 return (
-                  <div class="field" data-field={f.name}>
+                  <div key={f.name} class="field" data-field={f.name}>
                     <div class="field-row">
                       <span class="ftype" data-type={kindOf(f)}>
                         {markOf(f)}
@@ -90,11 +91,13 @@ export function FieldsBar(p: FieldsBarProps) {
                         data-verbatim
                         disabled={!expandable}
                         aria-expanded={v !== undefined}
+                        title={f.name}
                         onClick={() => p.onToggleField(f.name)}
                       >
                         {f.name}
                       </button>
                     </div>
+                    {v?.kind === "loading" && <p class="fvalues-status" role="status">正在统计取值…</p>}
                     {v?.kind === "error" && (
                       <div class="fvalues-error">
                         {v.lines.map((l) => (
@@ -102,20 +105,29 @@ export function FieldsBar(p: FieldsBarProps) {
                         ))}
                       </div>
                     )}
-                    {v?.kind === "ok" && (
+                    {v?.kind === "ok" && v.rows.length === 0 && (
+                      <p class="fvalues-status" role="status">暂无可用取值</p>
+                    )}
+                    {v?.kind === "ok" && v.rows.length > 0 && (
                       <ul class="fvalues">
                         {v.rows.map((r) => (
-                          <li class="fvalue">
-                            <span class="fv-text" data-verbatim title={r.text}>
-                              {r.text}
-                            </span>
-                            <span class="fv-n" data-verbatim>{r.n}</span>
-                            <button type="button" class="fv-eq" onClick={() => p.onAdd(f.name, false, r)}>
-                              =
-                            </button>
-                            <button type="button" class="fv-ne" onClick={() => p.onAdd(f.name, true, r)}>
-                              ≠
-                            </button>
+                          <li key={r.json} class="fvalue">
+                            <div class="fv-summary">
+                              <span class="fv-text" data-verbatim title={r.text}>
+                                {r.text}
+                              </span>
+                              <span class="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
+                                {r.n}
+                              </span>
+                            </div>
+                            <div class="fv-actions">
+                              <button type="button" class="fv-eq" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>
+                                = 加入筛选
+                              </button>
+                              <button type="button" class="fv-ne" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>
+                                ≠ 排除此值
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>

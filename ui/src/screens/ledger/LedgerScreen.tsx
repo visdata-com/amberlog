@@ -92,7 +92,7 @@ const summaryCell = (g: (k: string) => Json | undefined, key: string): string =>
 
 function LedgerTable({ hits, onJump }: { hits: Hit[]; onJump: (dataset: string, to: "recon" | "search") => void }) {
   return (
-    <table class="ledger">
+    <table class="ledger" aria-label="数据资产台账">
       <thead>
         <tr class="group">
           {COLUMNS.map(() => (
@@ -175,7 +175,13 @@ export function LedgerScreen({ hidden }: { hidden: boolean }) {
           {req.running ? "查询中" : "查询"}
         </button>
       </div>
-      <ResultArea req={req} prefix="l" render={(hits) => <LedgerTable hits={hits} onJump={jump} />} />
+      <ResultArea
+        req={req}
+        prefix="l"
+        initial={{ title: "查看数据集台账", description: "选择时间范围，点击「查询」查看数据集的存储情况与对账汇总。" }}
+        emptyDescription="当前时间范围内没有台账记录，可以扩大时间范围后重新查询。"
+        render={(hits) => <LedgerTable hits={hits} onJump={jump} />}
+      />
     </section>
   );
 }
