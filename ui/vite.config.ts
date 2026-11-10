@@ -1,5 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
+import preact from "@preact/preset-vite";
 
 function normalizeUiEntry(): Plugin {
   return {
@@ -22,7 +22,7 @@ function normalizeUiEntry(): Plugin {
 
 export default defineConfig({
   base: "/ui/",
-  plugins: [react(), normalizeUiEntry()],
+  plugins: [preact({ reactAliasesEnabled: false }), normalizeUiEntry()],
   build: {
     target: "es2022",
     manifest: true,

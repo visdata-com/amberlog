@@ -1,7 +1,7 @@
 // 查询历史的列表（REQ-AMB-UI-SEARCH-V2-HISTORY-LIST、HISTORY-RESTORE、HISTORY-CLEAR）：从新到旧列出，选一项交给检索屏恢复；
 // 恢复会放弃 SQL 文本中未生效的修改时先请用户确认。
 
-import { useState } from "react";
+import { useState } from "preact/hooks";
 import { useStore } from "../../../lib/store.ts";
 import { Time } from "../../../shell/Time.tsx";
 import { chipText } from "../CondBox.tsx";
@@ -27,28 +27,28 @@ export function HistoryPanel(p: HistoryPanelProps) {
   };
 
   return (
-    <span className="history">
+    <span class="history">
       <button type="button" id="s-history-open" aria-expanded={open} onClick={() => setOpen(!open)}>
         查询历史
       </button>
       {open && (
-        <div className="history-panel" id="s-history">
+        <div class="history-panel" id="s-history">
           <ol id="s-history-list">
-            {items.map((it, i) => (
-              <li key={i}>
-                <button type="button" className="history-item" onClick={() => choose(it)}>
+            {items.map((it) => (
+              <li>
+                <button type="button" class="history-item" onClick={() => choose(it)}>
                   <Time us={it.at} />
                   {it.mode === "cond" ? (
                     <>
-                      <span className="history-stream">{it.stream}</span>
-                      {it.conds.map((c, j) => (
-                        <span key={j} className="history-cond" data-verbatim>
+                      <span class="history-stream">{it.stream}</span>
+                      {it.conds.map((c) => (
+                        <span class="history-cond" data-verbatim>
                           {chipText(c)}
                         </span>
                       ))}
                     </>
                   ) : (
-                    <code className="history-sql" data-verbatim>
+                    <code class="history-sql" data-verbatim>
                       {it.sql}
                     </code>
                   )}
@@ -62,7 +62,7 @@ export function HistoryPanel(p: HistoryPanelProps) {
         </div>
       )}
       {asking !== null && (
-        <div className="confirm" id="s-history-confirm">
+        <div class="confirm" id="s-history-confirm">
           <span>恢复会放弃对 SQL 的修改</span>
           <button
             type="button"

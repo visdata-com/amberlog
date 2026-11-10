@@ -1,8 +1,8 @@
 // 某屏的结果区：慢查询的已用秒数与「取消」、出错时各条、取消提示、「时刻格式无效」、「无结果」与本页上限
 // （REQ-AMB-UI-CONSOLE 取值、慢查询与取消、出错时三组）。屏只管画表格。
 
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import type { ComponentChildren } from "preact";
+import { useEffect, useState } from "preact/hooks";
 import type { Hit, Json } from "../lib/json.ts";
 import { BAD_TIME, CANCELLED, EMPTY, TOO_MANY } from "./errors.ts";
 import type { ResultRequest, ResultView } from "./requests.ts";
@@ -23,9 +23,9 @@ function useTicking(on: boolean): number {
 
 function Lines({ lines }: { lines: string[] }) {
   return (
-    <div className="message" role="status">
-      {lines.map((l, i) => (
-        <p key={i}>{l}</p>
+    <div class="message" role="status">
+      {lines.map((l) => (
+        <p>{l}</p>
       ))}
     </div>
   );
@@ -35,7 +35,7 @@ export interface ResultAreaProps {
   req: ResultRequest;
   /** 屏的 id 前缀（`s`、`l`、`r`）：结果区为 `#<p>-result`，「取消」为 `#<p>-cancel`。 */
   prefix: string;
-  render: (hits: Hit[], size: number, body: Map<string, Json>) => ReactNode;
+  render: (hits: Hit[], size: number, body: Map<string, Json>) => ComponentChildren;
   /** 为真时结果不按「无结果」与本页上限呈现（检索屏显示上下文结果时，REQ-AMB-UI-SEARCH-V2-CONTEXT-AS-RESULT）。 */
   plain?: boolean;
 }
@@ -44,14 +44,14 @@ export function ResultArea({ req, prefix, render, plain = false }: ResultAreaPro
   const v = req.view;
   const now = useTicking(v.kind === "running" || v.kind === "busy");
   // 出错或取消的文字之下保留的原结果
-  const withKept = (lines: ReactNode, keep: ResultView | undefined): ReactNode =>
+  const withKept = (lines: ComponentChildren, keep: ResultView | undefined): ComponentChildren =>
     keep === undefined ? lines : (
       <>
         {lines}
         {body(keep)}
       </>
     );
-  const body = (view: ResultView): ReactNode => {
+  const body = (view: ResultView): ComponentChildren => {
     switch (view.kind) {
       case "idle":
       case "running":
@@ -61,7 +61,7 @@ export function ResultArea({ req, prefix, render, plain = false }: ResultAreaPro
         if (view.hits.length === 0) return <Lines lines={[EMPTY]} />;
         return (
           <>
-            {view.hits.length === view.size && <p className="limit">{"结果已达本页上限 " + view.size + " 行"}</p>}
+            {view.hits.length === view.size && <p class="limit">{"结果已达本页上限 " + view.size + " 行"}</p>}
             {render(view.hits, view.size, view.body)}
           </>
         );
@@ -79,16 +79,16 @@ export function ResultArea({ req, prefix, render, plain = false }: ResultAreaPro
   };
   const elapsed = v.kind === "running" ? now - v.since : 0;
   return (
-    <div className="result" id={prefix + "-result"}>
+    <div class="result" id={prefix + "-result"}>
       {v.kind === "running" && elapsed >= SLOW_MS && (
-        <div className="slow">
+        <div class="slow">
           <span>{"已用 " + Math.floor(elapsed / 1000) + " 秒"}</span>
           <button type="button" id={prefix + "-cancel"} onClick={() => req.cancel()}>
             取消
           </button>
         </div>
       )}
-      {v.kind === "running" ? <div className="stale">{body(v.prev)}</div> : body(v)}
+      {v.kind === "running" ? <div class="stale">{body(v.prev)}</div> : body(v)}
     </div>
   );
 }

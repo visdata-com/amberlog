@@ -1,6 +1,6 @@
 // 时区选择（REQ-AMB-UI-CONSOLE-TZ-CHOICES）：下拉列出全部候选，旁边的输入框按名字筛选（需求块未要求筛选，属实现自由）。
 
-import { useState } from "react";
+import { useState } from "preact/hooks";
 import { setTimeZone, timeZones } from "./settings.ts";
 
 /** 名字含 `filter`（不区分大小写）的候选；当前所选总在其中。 */
@@ -16,16 +16,16 @@ export function TimeZonePicker({ timezone }: { timezone: string }) {
     <>
       <input
         id="tz-filter"
-        className="tz-filter"
-        autoComplete="off"
-        spellCheck={false}
+        class="tz-filter"
+        autocomplete="off"
+        spellcheck={false}
         aria-label="筛选时区"
         value={filter}
         onInput={(e) => setFilter(e.currentTarget.value)}
       />
       <select id="tz" value={timezone} onChange={(e) => setTimeZone(e.currentTarget.value)}>
         {filterZones(timeZones, filter, timezone).map((z) => (
-          <option key={z} value={z}>{z}</option>
+          <option value={z}>{z}</option>
         ))}
       </select>
     </>

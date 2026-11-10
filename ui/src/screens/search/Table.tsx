@@ -26,7 +26,7 @@ export function Value({ v, time, terms }: { v: Json | undefined; time: boolean; 
   const us = time ? intOf(v) : null;
   if (us !== null) return <Time us={us} />;
   if (typeof v === "string" && terms.length > 0) {
-    return <>{highlight(v, terms).map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</>;
+    return <>{highlight(v, terms).map((s) => (s.hit ? <mark>{s.text}</mark> : s.text))}</>;
   }
   return <>{rawText(v)}</>;
 }
@@ -50,13 +50,13 @@ export interface TableProps {
 export function Table(p: TableProps) {
   const cols = columnsOf(p.hits).filter((c) => !p.hidden.has(c));
   return (
-    <table className="hits">
+    <table class="hits">
       <thead>
         <tr>
           {cols.map((c) => (
-            <th key={c} data-col={c}>
+            <th data-col={c}>
               {c === "_timestamp" && p.ascending !== null ? (
-                <button type="button" className="sort" id="s-sort" onClick={p.onSort}>
+                <button type="button" class="sort" id="s-sort" onClick={p.onSort}>
                   <TimeHeader label={c} />
                   {p.ascending ? " ↑" : " ↓"}
                 </button>
@@ -65,7 +65,7 @@ export function Table(p: TableProps) {
               ) : (
                 c
               )}
-              <button type="button" className="hide" aria-label="隐藏列" onClick={() => p.onHide(c)}>
+              <button type="button" class="hide" aria-label="隐藏列" onClick={() => p.onHide(c)}>
                 ×
               </button>
             </th>
@@ -75,9 +75,8 @@ export function Table(p: TableProps) {
       <tbody>
         {p.hits.map((h, i) => (
           <tr
-            key={i}
             tabIndex={0}
-            className={[i === p.viewed ? "viewed" : "", i === p.center ? "center" : ""].join(" ").trim() || undefined}
+            class={[i === p.viewed ? "viewed" : "", i === p.center ? "center" : ""].join(" ").trim() || undefined}
             onClick={() => p.onOpen(i)}
             onKeyDown={(e) => {
               if (e.key === "Enter") p.onOpen(i);
@@ -86,11 +85,11 @@ export function Table(p: TableProps) {
             {cols.map((c) =>
               h.has(c) ? (
                 // 时刻格的悬停文字由 <Time> 给出；其余格截断时经悬停看全文
-                <td key={c} title={p.timeKeys.has(c) && intOf(h.get(c)) !== null ? undefined : rawText(h.get(c))}>
+                <td title={p.timeKeys.has(c) && intOf(h.get(c)) !== null ? undefined : rawText(h.get(c))}>
                   <Value v={h.get(c)} time={p.timeKeys.has(c)} terms={p.terms} />
                 </td>
               ) : (
-                <td key={c} />
+                <td />
               ),
             )}
           </tr>

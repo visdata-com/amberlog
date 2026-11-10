@@ -30,7 +30,7 @@ try {
   if (!runtime.includes("index.html") || !runtime.some((name) => name.endsWith(".js")) || !runtime.some((name) => name.endsWith(".css"))) {
     throw new Error("缺少 HTML、JS 或 CSS 产物");
   }
-  // React 替换 Preact 后按完整资源集计量，不再限制为单个 200 KiB HTML。
+  // 多文件产物按完整资源集计量，不再限制为单个 200 KiB HTML。
   // 提高预算须在 PR 中说明；gzip 用于比较传输体积，服务按原始字节返回。
   let total = 0;
   let compressed = 0;

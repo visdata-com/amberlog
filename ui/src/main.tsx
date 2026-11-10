@@ -1,9 +1,15 @@
-import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes } from "react-router";
+import { render } from "preact";
+import { LocationProvider, useLocation } from "preact-iso";
 import { App, applyTheme } from "./app.tsx";
 import { settings } from "./shell/settings.ts";
 import { NotFoundPage } from "./shell/NotFoundPage.tsx";
+import { isKnownPath } from "./shell/routes.ts";
 import "./style.css";
+
+function RoutedApp() {
+  const { path } = useLocation();
+  return isKnownPath(path) ? <App /> : <NotFoundPage />;
+}
 
 // 外观随设置同步换上（不等组件重画）
 let theme = settings.get().theme;
@@ -14,16 +20,9 @@ settings.subscribe(() => {
     applyTheme(theme);
   }
 });
-createRoot(document.getElementById("app") as HTMLElement).render(
-  <BrowserRouter basename="/ui">
-    <Routes>
-      <Route path="/" element={<App />}>
-        <Route index element={null} />
-        <Route path="search" element={null} />
-        <Route path="ledger" element={null} />
-        <Route path="reconciliation" element={null} />
-      </Route>
-      <Route path="*" element={<NotFoundPage />} />
-    </Routes>
-  </BrowserRouter>,
+render(
+  <LocationProvider scope="/ui">
+    <RoutedApp />
+  </LocationProvider>,
+  document.getElementById("app") as HTMLElement,
 );

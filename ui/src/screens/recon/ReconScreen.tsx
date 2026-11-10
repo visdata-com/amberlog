@@ -1,7 +1,7 @@
 // 对账屏（REQ-AMB-UI-GOVERNANCE 对账屏一组）：查某数据集的 `_reconciliation`，每个 hit 一行（不补没有计数的分钟）；
 // 三个计数、两个差值、判定所比的两个数与判定列，「只看非一致」，常显说明文字。不设时间范围上限、不翻页。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US } from "../../lib/time.ts";
@@ -54,7 +54,7 @@ function CountOr({ v, absent }: { v: Json | undefined; absent: string }) {
 
 function ReconTable({ hits }: { hits: Hit[] }) {
   return (
-    <table className="recon">
+    <table class="recon">
       <thead>
         <tr>
           <th><TimeHeader label="窗口起点" /></th>
@@ -75,16 +75,16 @@ function ReconTable({ hits }: { hits: Hit[] }) {
           const ws = intOf(g("window_start"));
           const sources = g("sent_sources");
           return (
-            <tr key={rawText(g("window_start"))}>
+            <tr>
               <td>{ws !== null ? <Time us={ws} /> : rawText(g("window_start"))}</td>
-              <td className="num"><CountOr v={g("sent")} absent="未上报" /></td>
+              <td class="num"><CountOr v={g("sent")} absent="未上报" /></td>
               <td>{sources === null || sources === undefined ? "—" : rawText(sources)}</td>
-              <td className="num"><Count v={g("received")} /></td>
-              <td className="num"><Count v={g("durable")} /></td>
-              <td className="num"><CountOr v={g("gap_sent_received")} absent="—" /></td>
-              <td className="num"><Count v={g("gap_received_durable")} /></td>
-              <td className="num"><CountOr v={g("ts_sent")} absent="—" /></td>
-              <td className="num"><CountOr v={g("ts_durable")} absent="—" /></td>
+              <td class="num"><Count v={g("received")} /></td>
+              <td class="num"><Count v={g("durable")} /></td>
+              <td class="num"><CountOr v={g("gap_sent_received")} absent="—" /></td>
+              <td class="num"><Count v={g("gap_received_durable")} /></td>
+              <td class="num"><CountOr v={g("ts_sent")} absent="—" /></td>
+              <td class="num"><CountOr v={g("ts_durable")} absent="—" /></td>
               <td>{verdictText(g("verdict"))}</td>
             </tr>
           );
@@ -125,24 +125,24 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
     };
   }, []);
   return (
-    <section id="recon" className="screen" hidden={hidden}>
-      <p className="notice" id="r-notice">{NOTE}</p>
-      <div className="bar">
+    <section id="recon" class="screen" hidden={hidden}>
+      <p class="notice" id="r-notice">{NOTE}</p>
+      <div class="bar">
         <input
           id="r-dataset"
           list="r-datasets"
-          autoComplete="off"
+          autocomplete="off"
           aria-label="数据集"
           value={dataset}
           onInput={(e) => setDataset(e.currentTarget.value)}
         />
         <datalist id="r-datasets">
           {list.map((d) => (
-            <option key={d} value={d} />
+            <option value={d} />
           ))}
         </datalist>
         <TimeRangeInputs range={range} prefix="r" />
-        <label className="field">
+        <label class="field">
           <input
             type="checkbox"
             id="r-only-nonconsistent"
@@ -151,7 +151,7 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
           />
           只看非一致
         </label>
-        <button type="button" id="r-query" className="primary" disabled={req.queryDisabled} onClick={() => query(dataset)}>
+        <button type="button" id="r-query" class="primary" disabled={req.queryDisabled} onClick={() => query(dataset)}>
           {req.running ? "查询中" : "查询"}
         </button>
       </div>

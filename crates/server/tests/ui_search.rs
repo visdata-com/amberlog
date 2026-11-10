@@ -1869,7 +1869,7 @@ fn ui_search_detail_add_sql_cursor() {
         "(() => {{ const e = document.getElementById('s-sql'); e.focus(); e.setSelectionRange({}, {}); }})()",
         text.len(), text.len()
     ));
-    // 用真实键盘事件移动光标；人工派发原生 select 不等于 React 的合成 onSelect。
+    // 用真实键盘事件移动光标，使浏览器触发输入框的选择事件。
     for _ in at..text.len() {
         for kind in ["keyDown", "keyUp"] {
             b.call(
