@@ -1,6 +1,6 @@
 // 分布图（REQ-AMB-UI-SEARCH-HIST-DRAW、HIST-TOOLTIP、HIST-ZOOM）：每个分桶一根柱，同色；点一根柱或拖选几根缩放。
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useStore } from "../../lib/store.ts";
 import { settings } from "../../shell/settings.ts";
 import { type Bar, heights } from "./chart.ts";
@@ -65,18 +65,18 @@ export function Histogram({ name, bars, interval, range, onZoom }: HistogramProp
     }
   };
   return (
-    <div className="hist">
-      <div className="hist-header">
-        <span className="hist-title">日志时间分布</span>
-        <span className="hist-range">{histogramTime(range[0], timezone) + " → " + histogramTime(range[1], timezone) + " · " + timezone}</span>
+    <div class="hist">
+      <div class="hist-header">
+        <span class="hist-title">日志时间分布</span>
+        <span class="hist-range">{histogramTime(range[0], timezone) + " → " + histogramTime(range[1], timezone) + " · " + timezone}</span>
       </div>
-      <div className="hbars" onPointerLeave={() => { setDrag(null); setHover(null); }} onPointerCancel={() => { setDrag(null); setHover(null); }}>
+      <div class="hbars" onPointerLeave={() => { setDrag(null); setHover(null); }} onPointerCancel={() => { setDrag(null); setHover(null); }}>
         {bars.map((b, i) => {
           return (
             <div
               key={String(b.start)}
               ref={(el) => { columns.current[i] = el; }}
-              className={(i >= lo && i <= hi) || active?.index === i ? "hbar picked" : "hbar"}
+              class={(i >= lo && i <= hi) || active?.index === i ? "hbar picked" : "hbar"}
               data-start={String(b.start)}
               role="button"
               tabIndex={i === Math.min(focused, bars.length - 1) ? 0 : -1}
@@ -117,42 +117,42 @@ export function Histogram({ name, bars, interval, range, onZoom }: HistogramProp
                 else onZoom(i, i);
               }}
             >
-              <div className="fill" style={{ height: hs[i]! * 100 + "%" }} />
+              <div class="fill" style={{ height: hs[i]! * 100 + "%" }} />
             </div>
           );
         })}
       </div>
-      <div className="hist-axis" aria-label="时间轴">
+      <div class="hist-axis" aria-label="时间轴">
         {tickIndices.map((index) => {
           const at = index === bars.length ? range[1] : index === 0 ? range[0] : bars[index]!.start;
           const edge = index === 0 ? "start" : index === bars.length ? "end" : "middle";
           const minor = index !== 0 && index !== bars.length && index !== Math.round(bars.length / 2);
           return <span
             key={index}
-            className={"hist-axis__tick" + (minor ? " hist-axis__tick--minor" : "")}
+            class={"hist-axis__tick" + (minor ? " hist-axis__tick--minor" : "")}
             data-edge={edge}
             style={{ left: (bars.length === 0 ? 0 : index / bars.length * 100) + "%" }}
           >{histogramTick(at, range, timezone)}</span>;
         })}
       </div>
-      <div className="hist-footer">
+      <div class="hist-footer">
         <span>悬停查看详情 · 点击或拖选缩小时间范围</span>
-        <span className="per-bar" id="s-per-bar">{"每柱 " + name}</span>
+        <span class="per-bar" id="s-per-bar">{"每柱 " + name}</span>
       </div>
       {active !== null && span !== null && (
         <div
           ref={tooltip}
-          className="hist-tooltip"
+          class="hist-tooltip"
           id="s-hist-tooltip"
           role="tooltip"
           style={{ left: position.left + "px", top: position.top + "px" }}
         >
-          <div className="hist-tooltip__range">
+          <div class="hist-tooltip__range">
             <span>开始</span><span>{histogramTime(span.start, timezone)}</span>
             <span>结束</span><span>{histogramTime(span.end, timezone)}</span>
           </div>
-          <div className="hist-tooltip__count"><span>日志条数</span><strong>{/^\d+$/.test(active.bar.n) ? BigInt(active.bar.n).toLocaleString("en-US") : active.bar.n} 条</strong></div>
-          <div className="hist-tooltip__zone">{histogramZone(span.start, span.end, timezone)}</div>
+          <div class="hist-tooltip__count"><span>日志条数</span><strong>{/^\d+$/.test(active.bar.n) ? BigInt(active.bar.n).toLocaleString("en-US") : active.bar.n} 条</strong></div>
+          <div class="hist-tooltip__zone">{histogramZone(span.start, span.end, timezone)}</div>
         </div>
       )}
     </div>

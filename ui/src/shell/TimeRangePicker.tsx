@@ -1,4 +1,5 @@
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { TargetedKeyboardEvent as ReactKeyboardEvent } from "preact";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../components/ui/Button.tsx";
 import { Input } from "../components/ui/Input.tsx";
 import { useStore } from "../lib/store.ts";
@@ -248,7 +249,7 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
                   <span>{which === "start" ? "开始时间" : "结束时间"}</span>
                   <span className="time-range-date">{which === "start" ? draft.absolute.startDate ?? "未选择日期" : draft.absolute.endDate ?? "未选择日期"}</span>
                   <Input id={id + "-" + which} value={which === "start" ? draft.absolute.startTime : draft.absolute.endTime}
-                    autoComplete="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? id + "-error" : undefined}
+                    autoComplete="off" spellcheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? id + "-error" : undefined}
                     onInput={event => { const text = event.currentTarget.value; updateDraft(d => ({ ...d, absolute: { ...d.absolute, [which + "Time"]: text } })); }} />
                 </label>;
               })}

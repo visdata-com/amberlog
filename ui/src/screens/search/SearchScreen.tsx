@@ -3,7 +3,7 @@
 
 import { Button } from "../../components/ui/Button.tsx";
 import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Num, intOf, rawText, toJsonText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US, nowUs } from "../../lib/time.ts";

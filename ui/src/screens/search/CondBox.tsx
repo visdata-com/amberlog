@@ -2,8 +2,8 @@
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
 import { Input } from "../../components/ui/Input.tsx";
-import type { ReactNode, KeyboardEvent, SyntheticEvent } from "react";
-import { useState } from "react";
+import type { ComponentChildren as ReactNode, TargetedKeyboardEvent as KeyboardEvent, TargetedEvent as SyntheticEvent } from "preact";
+import { useState } from "preact/hooks";
 import type { ValueRow } from "./FieldsBar.tsx";
 import { conditionDraft, conditionHints, type ConditionHint } from "./conditionInput.ts";
 import type { Condition } from "./sql.ts";
@@ -66,7 +66,7 @@ export function CondBox(p: CondBoxProps) {
     }
   };
   const onKey = (e: KeyboardEvent<HTMLInputElement>): void => {
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.isComposing || e.keyCode === 229) return;
     if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       const available = conditionHints(input, p.columns, p.valuesOf);
       if (available.length > 0) {
@@ -128,7 +128,7 @@ export function CondBox(p: CondBoxProps) {
                 variant="embedded"
                 id="s-cond-input"
                 autoComplete="off"
-                spellCheck={false}
+                spellcheck={false}
                 aria-label="条件"
                 role="combobox"
                 aria-autocomplete="list"
@@ -180,7 +180,7 @@ export function CondBox(p: CondBoxProps) {
       ) : (
         <textarea
           id="s-sql"
-          spellCheck={false}
+          spellcheck={false}
           aria-label="SQL"
           placeholder="输入 SQL，如 SELECT * FROM app"
           value={p.sql}

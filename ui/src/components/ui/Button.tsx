@@ -1,4 +1,4 @@
-import type { ComponentPropsWithRef } from "react";
+import type { ComponentProps as ComponentPropsWithRef } from "preact";
 import "./button.css";
 
 export type ButtonProps = ComponentPropsWithRef<"button"> & {
