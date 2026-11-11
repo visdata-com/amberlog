@@ -52,6 +52,17 @@ export default defineConfig(({ mode, envDir = root }: ConfigEnv & { envDir?: str
       target: "es2022",
       manifest: true,
       sourcemap: false,
+      rollupOptions: {
+        output: {
+          // Keep runtime dependencies stable while application modules change.
+          manualChunks(id) {
+            if (!id.includes("/node_modules/")) return undefined;
+            if (/(^|\/)node_modules\/preact(?:\/|$)/.test(id)) return "vendor-preact";
+            if (/(^|\/)node_modules\/preact-iso(?:\/|$)/.test(id)) return "vendor-preact-iso";
+            return "vendor";
+          },
+        },
+      },
     },
     server: {
       host: process.env.AMBERLOG_UI_DEV_HOST ?? "127.0.0.1",
