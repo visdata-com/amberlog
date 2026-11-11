@@ -6,6 +6,7 @@ import { intOf, rawText, type Hit, type Json } from "../../../lib/json.ts";
 import { useStore } from "../../../lib/store.ts";
 import { formatLocal, formatUtc } from "../../../lib/time.ts";
 import { settings } from "../../../shell/settings.ts";
+import { useVisibleViewport } from "../../../shell/useVisibleViewport.ts";
 import { type Condition, detailCondition } from "../sql.ts";
 import { Value } from "../Table.tsx";
 import { addValue, groupFields, matches, prettyJson } from "./fields.ts";
@@ -42,6 +43,7 @@ const inInput = (e: KeyboardEvent): boolean => {
 };
 
 export function Detail(p: DetailProps) {
+  const viewportStyle = useVisibleViewport(true);
   const { timezone } = useStore(settings);
   const dialogRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<"fields" | "json">("fields");
@@ -101,6 +103,7 @@ export function Detail(p: DetailProps) {
         id="s-detail"
         ref={dialogRef}
         class="detail"
+        style={viewportStyle}
         role="dialog"
         aria-modal="true"
         aria-label="单条详情"

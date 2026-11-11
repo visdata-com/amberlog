@@ -28,6 +28,18 @@
   list-style: none;
 }
 
+#search .history-heading {
+  position: sticky;
+  top: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px;
+  background: var(--panel);
+  z-index: 1;
+}
+
 #search .history-item {
   display: flex;
   flex-wrap: wrap;
@@ -65,4 +77,20 @@
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+@media (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+  #search .history-panel, #search .history .confirm {
+    position: fixed;
+    z-index: 16;
+    left: calc(var(--visible-left, 0px) + var(--page-left));
+    top: calc(var(--visible-top, 0px) + max(12px, env(safe-area-inset-top, 0px)));
+    right: auto;
+    width: calc(var(--visible-width, 100%) - var(--page-left) - var(--page-right));
+    max-height: calc(var(--visible-height, 100dvh) - max(12px, env(safe-area-inset-top, 0px)) - max(12px, env(safe-area-inset-bottom, 0px)));
+    overflow: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
 }

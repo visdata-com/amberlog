@@ -19,7 +19,7 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
   const [expanded, setExpanded] = useState(false);
   const [month, setMonth] = useState("");
   const [focusDate, setFocusDate] = useState("");
-  const [position, setPosition] = useState({ left: 16, top: 16, maxHeight: 600 });
+  const [position, setPosition] = useState({ left: 16, top: 16, maxHeight: 600, maxWidth: 480 });
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
@@ -94,15 +94,22 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
       const v = window.visualViewport;
       const vx = v?.offsetLeft ?? 0, vy = v?.offsetTop ?? 0;
       const vw = v?.width ?? window.innerWidth, vh = v?.height ?? window.innerHeight;
+      const css = getComputedStyle(p);
+      const leftEdge = Math.max(16, parseFloat(css.paddingLeft));
+      const rightEdge = Math.max(16, parseFloat(css.paddingRight));
+      const topEdge = Math.max(16, parseFloat(css.paddingTop));
+      const bottomEdge = Math.max(16, parseFloat(css.paddingBottom));
       const rect = anchor.getBoundingClientRect();
-      const maxHeight = Math.max(0, vh - 32);
+      const maxHeight = Math.max(0, vh - topEdge - bottomEdge);
+      const maxWidth = Math.max(0, vw - leftEdge - rightEdge);
       const height = Math.min(p.scrollHeight, maxHeight);
       const below = vy + vh - 16 - rect.bottom - 4;
       const above = rect.top - vy - 20;
       const proposedTop = below >= height || below >= above ? rect.bottom + 4 : rect.top - height - 4;
-      const top = Math.max(vy + 16, Math.min(proposedTop, vy + vh - 16 - height));
-      const left = Math.max(vx + 16, Math.min(rect.right - p.offsetWidth, vx + vw - 16 - p.offsetWidth));
-      setPosition(old => old.left === left && old.top === top && old.maxHeight === maxHeight ? old : { left, top, maxHeight });
+      const top = Math.max(vy + topEdge, Math.min(proposedTop, vy + vh - bottomEdge - height));
+      const width = Math.min(p.offsetWidth, maxWidth);
+      const left = Math.max(vx + leftEdge, Math.min(rect.right - width, vx + vw - rightEdge - width));
+      setPosition(old => old.left === left && old.top === top && old.maxHeight === maxHeight && old.maxWidth === maxWidth ? old : { left, top, maxHeight, maxWidth });
     };
     const outside = (event: PointerEvent): void => {
       if (event.target instanceof Node && !panel.current?.contains(event.target) && !trigger.current?.contains(event.target)) close();
@@ -196,7 +203,7 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
       <span className="time-range-description" id={id + "-description"}>{summary.description}</span>
       {open && (
         <div id={id + "-panel"} ref={panel} className="time-range-panel" role="dialog" aria-labelledby={id + "-title"}
-          style={{ left: position.left + "px", top: position.top + "px", maxHeight: position.maxHeight + "px" }}>
+          style={{ left: position.left + "px", top: position.top + "px", maxHeight: position.maxHeight + "px", maxWidth: position.maxWidth + "px" }}>
           <div className="time-range-heading"><span id={id + "-title"}>时间范围</span><Button aria-label="关闭时间范围" onClick={() => close(true)}>×</Button></div>
           <div className="time-range-tabs" role="tablist" aria-label="时间类型">
             {(["relative", "absolute"] as const).map(mode => (
