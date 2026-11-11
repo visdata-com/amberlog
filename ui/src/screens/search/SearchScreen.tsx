@@ -1,8 +1,8 @@
-import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
-import { DatasetInput } from "../../shell/DatasetInput.tsx";
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
+import { Button } from "../../components/ui/Button.tsx";
+import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Num, intOf, rawText, toJsonText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
@@ -16,8 +16,10 @@ import { ResultArea } from "../../shell/ResultArea.tsx";
 import { onTokenConfirmed, settings } from "../../shell/settings.ts";
 import { Time } from "../../shell/Time.tsx";
 import { useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { DatasetInput } from "../../shell/DatasetInput.tsx";
 import { type Bar, bars, countsByStart, pageRows, total } from "./chart.ts";
 import { type Chip, CondBox } from "./CondBox.tsx";
+import { conditionDraft } from "./conditionInput.ts";
 import { type Field, isStreamName } from "./fields.ts";
 import { FieldsBar, RECORD_GROUP, type ValueRow, type Values } from "./FieldsBar.tsx";
 import {
@@ -173,6 +175,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const [stream, setStream] = useState("");
   const [mode, setMode] = useState<"cond" | "sql">("cond");
   const [chips, setChips] = useState<Chip[]>([]);
+  const [conditionInput, setConditionInput] = useState("");
+  const [conditionError, setConditionError] = useState<string | null>(null);
   const nextId = useRef(1);
   const [sql, setSql] = useState("");
   /** 切到 SQL 模式时填入的文本（TO-COND 据此判断改过没有）。 */
@@ -342,20 +346,41 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const utf8 = (f: string): boolean => utf8Names.has(f);
 
   const conds = chips.map((c) => c.cond);
+  const view = shownView(req.view);
+  const ok = view.kind === "ok" ? view : null;
+  const hits: readonly Hit[] = ok?.hits ?? [];
+  const conditionColumns = table !== undefined ? table.map((f) => f.name) : columnsOf(hits);
   const condPending = chips.length !== appliedIds.size || chips.some((c) => !appliedIds.has(c.id));
   // SQL 模式：上一次在 SQL 模式下检索过时比 SQL 文本；否则切过来时的未生效条件仍算，另加对 SQL 文本的修改
   const pending =
     mode === "cond"
-      ? condPending
+      ? condPending || conditionInput.trim() !== ""
       : launched?.mode === "sql"
         ? sql !== launched.query.sql
         : condPending || sql !== sqlBase;
   const blocked = mode === "cond" && fulltextBlocked(conds, range.length());
 
+  /** 提交尚未回车的输入，返回同一次操作要使用的完整条件，避免读到旧 state。 */
+  const prepareConditions = (): Chip[] | null => {
+    const draft = conditionDraft(conditionInput, conditionColumns);
+    if (draft.error !== null) {
+      setConditionError(draft.error);
+      document.getElementById("s-cond-input")?.focus();
+      return null;
+    }
+    setConditionInput("");
+    setConditionError(null);
+    return draft.condition === null ? chips : addCondition(draft.condition);
+  };
+
   /** 发起检索（REQ-AMB-UI-SEARCH-QUERY）：点「查询」、点柱缩放、「关闭并查询」。 */
   const launch = (): void => {
     // 429 倒计时中、或全文范围超限时「查询」不可用；点柱缩放、「关闭并查询」同样不发
-    if (req.queryDisabled || (mode === "cond" && fulltextBlocked(conds, range.length()))) return;
+    if (req.queryDisabled) return;
+    const queryChips = mode === "cond" ? prepareConditions() : [];
+    if (queryChips === null) return;
+    const queryConditions = queryChips.map((c) => c.cond);
+    if (mode === "cond" && fulltextBlocked(queryConditions, range.length())) return;
     const r = range.resolve();
     if (r === null) {
       // TIME-INPUT-INVALID 不发请求；分布图清空、总条数为「—」（HIST-CLEAR）
@@ -367,21 +392,21 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     const [start, end] = r;
     // 发起检索结束上下文结果的显示（CONTEXT-BACK）；在途的上下文请求由 req.result 中止（CONTEXT-STALE）
     setCtx(null);
-    const where = mode === "cond" ? whereClause(conds, utf8) : "";
+    const where = mode === "cond" ? whereClause(queryConditions, utf8) : "";
     const text = mode === "cond" ? selectSql(stream, where, ascending) : sql;
     const query: Query = { sql: text, start_time: start, end_time: end, size: SIZE, from: 0 };
-    const l: Launched = { mode, query, chips: mode === "cond" ? chips : [], stream, where };
+    const l: Launched = { mode, query, chips: queryChips, stream, where };
     resetValues();
     setLaunched(l);
     if (mode === "cond") {
-      setAppliedIds(new Set(chips.map((c) => c.id)));
-      appliedChips.current = chips;
+      setAppliedIds(new Set(queryChips.map((c) => c.id)));
+      appliedChips.current = queryChips;
     }
     const m = range.model;
     const at = nowUs();
     const kept = m.quick !== null ? { quick: m.quick } : { start, end };
     addHistory(
-      mode === "cond" ? { mode, stream, range: kept, conds: [...conds], at } : { mode, range: kept, sql: text, at },
+      mode === "cond" ? { mode, stream, range: kept, conds: queryConditions, at } : { mode, range: kept, sql: text, at },
     );
     setSqlNote(mode === "sql" && mentionsFulltext(text) && end - start > FULLTEXT_LIMIT_US);
     runResult(l, query);
@@ -454,14 +479,16 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     runResult(shown.launched, q);
   };
 
-  const addCondition = (c: Condition): void => {
+  const addCondition = (c: Condition): Chip[] => {
     const length = range.length();
     if (narrowOnAdd(conds, c, length)) {
       const m = range.model;
       if (m.quick !== null) range.setQuick(FULLTEXT_NARROW_US);
       else if (m.end !== null) range.setRange(m.end - FULLTEXT_NARROW_US, m.end);
     }
-    setChips([...chips, { id: nextId.current++, cond: c }]);
+    const next = [...chips, { id: nextId.current++, cond: c }];
+    setChips(next);
+    return next;
   };
 
   /**
@@ -469,6 +496,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
    * 相同的条件沿用其编号，算已生效。
    */
   const restore = (it: HistoryItem): void => {
+    setConditionInput("");
+    setConditionError(null);
     if ("quick" in it.range) range.setQuick(it.range.quick);
     else range.setRange(it.range.start, it.range.end);
     setConfirming(false);
@@ -496,7 +525,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const switchMode = (m: "cond" | "sql"): void => {
     if (m === mode) return;
     if (m === "sql") {
-      const text = searchSql(stream, conds, ascending, utf8);
+      const next = prepareConditions();
+      if (next === null) return;
+      const text = searchSql(stream, next.map((c) => c.cond), ascending, utf8);
       setSql(text);
       setSqlBase(text);
       cursor.current = null;
@@ -509,10 +540,6 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     }
   };
 
-  const view = shownView(req.view);
-  const ok = view.kind === "ok" ? view : null;
-  const hits: readonly Hit[] = ok?.hits ?? [];
-  const columns = columnsOf(hits);
   const from = shown?.query.from ?? 0;
   const timeKeys = timeColumns(shown?.query.sql ?? "");
   const terms =
@@ -591,8 +618,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   };
 
   return (
-    <section id="search" class="screen" hidden={hidden}>
-      <div class="query-panel" role="region" aria-label="查询条件">
+    <section id="search" className="screen" hidden={hidden}>
+      <div className="query-panel" role="region" aria-label="查询条件">
         <CondBox
           toolbar={
             <>
@@ -623,10 +650,10 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                   » 字段
                 </button>
               )}
-              <button type="button" id="s-query" class="primary query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
+              <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
                 {req.running ? "查询中" : "查询"}
-              </button>
-              {pending && <span class="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
+              </Button>
+              {pending && <span className="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
               <HistoryPanel
                 sqlEdited={mode === "sql" && sql !== (launched?.mode === "sql" ? launched.query.sql : sqlBase)}
                 onRestore={restore}
@@ -636,7 +663,14 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           mode={mode}
           chips={chips}
           applied={appliedIds}
-          columns={table !== undefined ? table.map((f) => f.name) : columns}
+          columns={conditionColumns}
+          input={conditionInput}
+          error={conditionError}
+          onInput={(text) => {
+            setConditionInput(text);
+            setConditionError(null);
+          }}
+          onError={setConditionError}
           valuesOf={(f) => {
             const v = values.get(f);
             return v?.kind === "ok" ? v.rows : null;
@@ -662,17 +696,17 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           }}
         />
         {blocked && (
-        <p class="hint" id="s-limit">
-          {FULLTEXT_LIMIT_TEXT}
-        </p>
+          <p className="hint" id="s-limit">
+            {FULLTEXT_LIMIT_TEXT}
+          </p>
         )}
         {sqlNote && (
-        <p class="hint" id="s-sql-note">
-          {SQL_FULLTEXT_NOTE}
-        </p>
+          <p className="hint" id="s-sql-note">
+            {SQL_FULLTEXT_NOTE}
+          </p>
         )}
       </div>
-      <div class="results">
+      <div className="results">
         {!fieldsCollapsed && (
           <FieldsBar
             fields={table ?? null}
@@ -694,9 +728,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             }}
           />
         )}
-        <div class="card">
-          <div class="info">
-            {view.kind === "idle" && <span class="result-heading">检索结果</span>}
+        <div className="card">
+          <div className="info">
+            {view.kind === "idle" && <span className="result-heading">检索结果</span>}
             <span id="s-total" hidden={view.kind === "idle"}>
               {"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}
             </span>
@@ -708,16 +742,17 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 {info(ok.body)}
               </span>
             )}
-            <span class="spacer" />
+            <span className="spacer" />
             {showHistogramToggle && (
               <button type="button" id="s-hist-toggle" onClick={toggle}>
                 {toggleText}
               </button>
             )}
             {hiddenCols.size > 0 && (
-              <span class="restore" id="s-hidden-cols">
+              <span className="restore" id="s-hidden-cols">
                 {[...hiddenCols].map((c) => (
                   <button
+                    key={c}
                     type="button"
                     onClick={() => setHiddenCols(new Set([...hiddenCols].filter((x) => x !== c)))}
                   >
@@ -726,7 +761,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 ))}
               </span>
             )}
-            <button
+            <Button
               type="button"
               id="s-prev"
               hidden={view.kind === "idle"}
@@ -734,8 +769,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               onClick={() => shown !== null && resend({ ...shown.query, from: Math.max(0, from - SIZE) })}
             >
               上一页
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               id="s-next"
               hidden={view.kind === "idle"}
@@ -743,24 +778,24 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               onClick={() => shown !== null && resend({ ...shown.query, from: from + SIZE })}
             >
               下一页
-            </button>
+            </Button>
           </div>
           {mode === "cond" && !collapsed && !emptyChart && (chart.kind === "bars" || chart.kind === "error") && (
-            <div class="hist-area" id="s-hist">
+            <div className="hist-area" id="s-hist">
               {chart.kind === "bars" && (
                 <Histogram name={chart.name} bars={chart.bars} interval={chart.us} range={chart.range} onZoom={zoom} />
               )}
               {chart.kind === "error" && (
-                <div class="message">
-                  {chart.lines.map((l) => (
-                    <p>{l}</p>
+                <div className="message">
+                  {chart.lines.map((l, i) => (
+                    <p key={i}>{l}</p>
                   ))}
                 </div>
               )}
             </div>
           )}
           {ctx !== null && (
-            <div class="context-bar" id="s-context">
+            <div className="context-bar" id="s-context">
               <Time us={ctx.t} />
               <button
                 type="button"
@@ -774,12 +809,12 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 返回检索结果
               </button>
               {ctx.center === null && (
-                <span class="hint" id="s-context-center-missing">
+                <span className="hint" id="s-context-center-missing">
                   {CENTER_MISSING}
                 </span>
               )}
               {ctx.few && (
-                <span class="hint" id="s-context-few">
+                <span className="hint" id="s-context-few">
                   {CONTEXT_FEW}
                 </span>
               )}
