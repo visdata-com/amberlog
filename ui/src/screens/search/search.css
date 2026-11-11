@@ -351,24 +351,34 @@
 /* 字段栏与结果并排（REQ-AMB-UI-SEARCH-V2-FIELDS-BAR）；收起时字段栏不渲染、不占位（FIELDS-COLLAPSE） */
 #search .results {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: stretch;
+  gap: 0;
+  background: var(--panel);
+  border: var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
 }
 
 #search .results > .card {
   flex: 1;
   min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
+#search .fields + .card { border-left: var(--border-default); }
+
 #search .fields {
-  flex: 0 0 216px;
+  flex: 0 0 clamp(200px, 25%, 400px);
   min-width: 0;
   max-height: 80vh;
   overflow-y: auto;
   padding: 6px;
-  background: var(--panel);
-  border: var(--border-default);
-  border-radius: var(--radius);
+  background: transparent;
+  border: none;
+  border-radius: 0;
   font-size: 13px;
 }
 
@@ -673,10 +683,7 @@
 }
 
 #search .fields {
-  flex-basis: 232px;
   padding: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow-sm);
 }
 
 #search .fields-head {
@@ -705,12 +712,11 @@
   border-radius: var(--radius-sm);
 }
 
-@media (max-width: 900px) {
-  #search .results { gap: 8px; }
-  #search .fields { flex-basis: 200px; }
-}
-
 @media (max-width: 640px) {
+  #search .query-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
+  #search .query-actions > .dataset-input,
+  #search .query-actions > .time-range-picker { flex: 0 0 100%; min-width: 0; }
+  #search .time-range-summary { width: 100%; }
   #search .bar:first-child,
   #search .bar:nth-child(2) { padding: 7px; }
   #search .condbox,
@@ -720,10 +726,11 @@
   #search .condbox .modes,
   #search .condition-editor { flex-basis: 100%; }
   #search .results { display: block; }
+  #search .fields + .card { border-left: none; border-top: var(--border-default); }
   #search .fields {
     width: 100%;
     max-height: 32vh;
-    margin-bottom: 8px;
+    margin-bottom: 0;
   }
   #search .fvalues {
     max-height: min(240px, 22vh);
@@ -732,4 +739,8 @@
   #search .results > .card { width: 100%; }
   #search .info { align-items: flex-start; }
   #search .info .spacer { display: none; }
+}
+
+@media (hover: none) {
+  #search table.hits th .hide { visibility: visible; }
 }

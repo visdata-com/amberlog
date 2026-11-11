@@ -1,6 +1,9 @@
 /* Amberlog 控制台基础视觉系统。页面保持无外部字体与资源依赖。 */
 
 :root {
+  --page-gutter: 24px;
+  --page-left: max(var(--page-gutter), env(safe-area-inset-left, 0px));
+  --page-right: max(var(--page-gutter), env(safe-area-inset-right, 0px));
   --bg: #f5f7f9;
   --panel: #ffffff;
   --panel-subtle: #f8fafc;
@@ -212,7 +215,7 @@ textarea,
   align-items: center;
   gap: 8px 12px;
   min-height: 52px;
-  padding: 9px max(16px, calc((100vw - 1680px) / 2));
+  padding: 9px var(--page-right) 9px var(--page-left);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   border-bottom: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
@@ -267,9 +270,10 @@ input.invalid {
 }
 
 main {
-  width: min(100%, 1920px);
-  margin: 0 auto;
-  padding: 18px max(16px, calc((100vw - 1680px) / 2));
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 18px var(--page-right) 18px var(--page-left);
 }
 
 .screen { display: flex; flex-direction: column; gap: 10px; }
@@ -321,6 +325,10 @@ main {
 .app-shell--fill .result .slow,
 .app-shell--fill .result .limit,
 .app-shell--fill .result .message { flex-shrink: 0; }
+
+@media (min-width: 1920px) {
+  :root { --page-gutter: 32px; }
+}
 
 .bar {
   display: flex;
@@ -602,15 +610,16 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 @media (max-width: 900px) {
+  :root { --page-gutter: 12px; }
   .topbar { align-items: flex-start; }
   .topbar .spacer { display: none; }
   .topbar .field,
   .topbar .note { margin-top: 2px; }
-  main { padding: 12px; }
+  main { padding-block: 12px; }
 }
 
 @media (max-width: 640px) {
-  .topbar { position: static; padding: 8px 10px; }
+  .topbar { position: static; padding-block: 8px; }
   .topbar .field,
   .topbar .note,
   .topbar .hint { flex: 1 1 100%; }
@@ -625,6 +634,28 @@ tbody tr:last-child td { border-bottom: none; }
   .bar textarea { min-width: 0; width: 100%; }
   th,
   td { padding: 5px 7px; }
+  .bar > .dataset-input { width: 100%; min-width: 0; }
+  .app-shell--fill { height: auto; min-height: 100dvh; }
+  .app-shell--fill .screen > .result { flex: none; min-height: 0; overflow: visible; }
+  .table-scroll { max-height: none; overscroll-behavior-y: auto; }
+  main { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+}
+
+@media (max-width: 640px) and (pointer: coarse) {
+  .topbar nav button, .topbar nav button[aria-selected], .bar > button,
+  #search .query-actions > button, #s-history-open, #search .modes button,
+  #search .info button, #search .fields-head button, #s-detail .detail-head button, #search .history-heading button,
+  .time-range-heading button, .time-range-summary, .custom-select__trigger {
+    min-height: 44px; min-width: 44px; border: 6px solid transparent;
+    background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--line-control);
+  }
+  input:not([type="checkbox"]), textarea { font-size: 16px; }
+  .dataset-input input, .topbar input {
+    min-height: 44px; border: 6px solid transparent; background-clip: padding-box;
+    box-shadow: inset 0 0 0 1px var(--line-control);
+  }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: -6px; }
+  .custom-select__option { min-height: 44px; }
 }
 
 .not-found {

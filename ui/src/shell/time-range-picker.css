@@ -5,13 +5,15 @@
 .time-range-description { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .time-range-panel {
   position: fixed; z-index: 10; width: min(480px, calc(100vw - 32px));
-  padding: var(--space-4); overflow: auto; overscroll-behavior: contain;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  overflow: auto; overscroll-behavior: contain;
   background: var(--panel); color: var(--text); border: var(--border-default);
   border-radius: var(--radius); box-shadow: var(--shadow-popover);
   display: flex; flex-direction: column; gap: var(--space-3); font-size: var(--font-size-base);
 }
 .time-range-heading, .time-range-month, .time-range-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .time-range-heading { font-weight: var(--font-weight-medium); }
+.time-range-heading { position: sticky; top: 0; z-index: 1; background: var(--panel); }
 .time-range-heading > button { min-width: var(--control-height); }
 .time-range-tabs { display: flex; gap: var(--space-2); border-bottom: var(--border-default); }
 .time-range-tabs > button { border: none; border-radius: 0; border-bottom: 2px solid transparent; }
