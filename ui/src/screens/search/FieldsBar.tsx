@@ -2,6 +2,7 @@
 // 以「=」「≠」加入条件。状态与请求在 SearchScreen，这里只画。
 
 import { useState } from "preact/hooks";
+import { Input } from "../../components/ui/Input.tsx";
 import { type Field, groupFields } from "./fields.ts";
 
 /** 一个取值：原始 JSON 文本、是否 JSON 字符串、显示的文字，与条数原文。 */
@@ -12,7 +13,7 @@ export interface ValueRow {
   n: string;
 }
 
-export type Values = { kind: "loading" } | { kind: "ok"; rows: ValueRow[] } | { kind: "error"; lines: string[] };
+export type Values = { context: string } & ( { kind: "loading" } | { kind: "ok"; rows: ValueRow[] } | { kind: "error"; lines: string[] });
 
 /** 类型标记：四种类型与 `_timestamp` 各不相同（FIELDS-BAR）。 */
 const MARKS: Readonly<Record<string, string>> = { Int64: "123", Float64: "1.5", Boolean: "✓", Utf8: "Aa" };
@@ -34,6 +35,8 @@ export interface FieldsBarProps {
   values: ReadonlyMap<string, Values>;
   /** 此刻能不能展开字段的取值（VALUES-REQUEST 的前提）。 */
   canExpand: boolean;
+  context: string;
+  onRefresh: (field: string) => void;
   onToggleField: (field: string) => void;
   onAdd: (field: string, negate: boolean, v: ValueRow) => void;
   onCollapse: () => void;
@@ -43,11 +46,11 @@ export function FieldsBar(p: FieldsBarProps) {
   const [filter, setFilter] = useState("");
   const groups = p.fields === null ? [] : groupFields(p.fields, filter);
   return (
-    <aside class="fields" id="s-fields">
-      <div class="fields-head">
-        <input
+    <aside className="fields" id="s-fields">
+      <div className="fields-head">
+        <Input
           id="s-fields-filter"
-          autocomplete="off"
+          autoComplete="off"
           spellcheck={false}
           aria-label="筛选字段"
           placeholder="筛选字段名称"
@@ -59,9 +62,9 @@ export function FieldsBar(p: FieldsBarProps) {
         </button>
       </div>
       {p.error !== null && (
-        <div class="fields-error" id="s-fields-error">
-          {p.error.map((l) => (
-            <p>{l}</p>
+        <div className="fields-error" id="s-fields-error">
+          {p.error.map((l, i) => (
+            <p key={i}>{l}</p>
           ))}
         </div>
       )}
@@ -70,24 +73,24 @@ export function FieldsBar(p: FieldsBarProps) {
         // 筛选时组内匹配的字段照样列出，不论组是否收起（FIELDS-FILTER）
         const open = filter !== "" || p.open.has(key);
         return (
-          <section key={key} class="fgroup" data-group={key}>
-            <button type="button" class="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
-              <span class="fgroup-name" title={g.name ?? "记录字段"}>{g.name ?? "记录字段"}</span>
-              <span class="fcount">{g.fields.length}</span>
+          <section key={key} className="fgroup" data-group={key}>
+            <button type="button" className="fgroup-head" aria-expanded={open} onClick={() => p.onToggleGroup(key)}>
+              <span className="fgroup-name" title={g.name ?? "记录字段"}>{g.name ?? "记录字段"}</span>
+              <span className="fcount">{g.fields.length}</span>
             </button>
             {open &&
               g.fields.map((f) => {
                 const v = p.values.get(f.name);
                 const expandable = f.name !== "_timestamp" && (v !== undefined || p.canExpand);
                 return (
-                  <div key={f.name} class="field" data-field={f.name}>
-                    <div class="field-row">
-                      <span class="ftype" data-type={kindOf(f)}>
+                  <div key={f.name} className="field" data-field={f.name}>
+                    <div className="field-row">
+                      <span className="ftype" data-type={kindOf(f)}>
                         {markOf(f)}
                       </span>
                       <button
                         type="button"
-                        class="fname"
+                        className="fname"
                         data-verbatim
                         disabled={!expandable}
                         aria-expanded={v !== undefined}
@@ -96,37 +99,46 @@ export function FieldsBar(p: FieldsBarProps) {
                       >
                         {f.name}
                       </button>
+                      {v !== undefined && (
+                        <button
+                          type="button"
+                          className="fvalues-refresh"
+                          aria-label="刷新取值"
+                          title="刷新取值"
+                          disabled={!p.canExpand}
+                          onClick={() => p.onRefresh(f.name)}
+                        >
+                          ↻
+                        </button>
+                      )}
                     </div>
-                    {v?.kind === "loading" && <p class="fvalues-status" role="status">正在统计取值…</p>}
+                    {v !== undefined && v.context !== p.context && <p className="fvalues-status">筛选已变更，取值待刷新</p>}
+                    {v?.kind === "loading" && <p className="fvalues-status" role="status">正在统计取值…</p>}
                     {v?.kind === "error" && (
-                      <div class="fvalues-error">
-                        {v.lines.map((l) => (
-                          <p>{l}</p>
+                      <div className="fvalues-error">
+                        {v.lines.map((l, i) => (
+                          <p key={i}>{l}</p>
                         ))}
                       </div>
                     )}
                     {v?.kind === "ok" && v.rows.length === 0 && (
-                      <p class="fvalues-status" role="status">暂无可用取值</p>
+                      <p className="fvalues-status" role="status">暂无可用取值</p>
                     )}
                     {v?.kind === "ok" && v.rows.length > 0 && (
-                      <ul class="fvalues">
+                      <ul className="fvalues" tabIndex={0} aria-label={f.name + " 的常见取值，可滚动"}>
                         {v.rows.map((r) => (
-                          <li key={r.json} class="fvalue">
-                            <div class="fv-summary">
-                              <span class="fv-text" data-verbatim title={r.text}>
+                          <li key={r.json} className="fvalue">
+                            <div className="fv-summary">
+                              <span className="fv-text" data-verbatim title={r.text}>
                                 {r.text}
                               </span>
-                              <span class="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
+                              <span className="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
                                 {r.n}
                               </span>
-                            </div>
-                            <div class="fv-actions">
-                              <button type="button" class="fv-eq" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>
-                                = 加入筛选
-                              </button>
-                              <button type="button" class="fv-ne" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>
-                                ≠ 排除此值
-                              </button>
+                              <span className="fv-actions">
+                                <button type="button" className="fv-eq" aria-label="将此值加入筛选" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>=</button>
+                                <button type="button" className="fv-ne" aria-label="排除此值" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>≠</button>
+                              </span>
                             </div>
                           </li>
                         ))}

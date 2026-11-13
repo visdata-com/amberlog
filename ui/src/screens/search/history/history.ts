@@ -15,6 +15,7 @@ const sameRange = (a: HistoryRange, b: HistoryRange): boolean =>
   "quick" in a ? "quick" in b && a.quick === b.quick : !("quick" in b) && a.start === b.start && a.end === b.end;
 
 export const sameCondition = (a: Condition, b: Condition): boolean =>
+  a.kind === "set" ? b.kind === "set" && JSON.stringify(a) === JSON.stringify(b) :
   a.kind === "text"
     ? b.kind === "text" && a.text === b.text
     : b.kind === "field" && a.field === b.field && a.op === b.op && a.value === b.value;

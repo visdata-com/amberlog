@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   type Condition, parseCondition, literal, searchSql, histogramSql, countSql, valuesSql, whereClause,
-  detailCondition, insertAtCursor, mentionsFulltext, fromTable, timeColumns, conditionSql,
+  detailCondition, mentionsFulltext, fromTable, timeColumns, conditionSql,
 } from "./sql.ts";
 
 const parseAll = (inputs: string[]): Condition[] => inputs.map((s) => {
@@ -96,15 +96,7 @@ test("从详情加入：字符串带双引号，其余取原始 JSON 文本（�
   assert.equal(searchSql("app", conds, false), "SELECT * FROM \"app\" WHERE \"code\" = '404' AND \"status\" != 502");
 });
 
-test("SQL 模式下插到光标处（块场景）", () => {
-  const sql = "SELECT * FROM \"app\" WHERE  LIMIT 5";
-  const cursor = sql.indexOf("WHERE ") + "WHERE ".length;
-  const r = insertAtCursor(sql, cursor, "\"host\" = 'h1'");
-  assert.equal(r.sql, "SELECT * FROM \"app\" WHERE \"host\" = 'h1' LIMIT 5");
-  assert.equal(insertAtCursor("SELECT * FROM t", null, "x").sql, "SELECT * FROM t x");
-  assert.equal(insertAtCursor("", null, "x").sql, "x");
-  assert.equal(insertAtCursor("ab", 1, "x").sql, "a xb");
-});
+// 详情筛选的 WHERE 结构更新契约见 sqlPanelFilters.test.ts。
 
 test("SQL 模式的全文提示按不区分大小写的文字认", () => {
   assert.ok(mentionsFulltext("SELECT * FROM \"app\" WHERE MATCH_ALL('timeout')"));
@@ -144,7 +136,7 @@ test("按字段表的类型写字面量（V2 块场景）", () => {
 
 test("取值请求的 SQL（V2 块场景）", () => {
   assert.equal(valuesSql("app", whereClause(parseAll(["status >= 500"])), "level"),
-    "SELECT \"level\", count(*) AS n__ FROM \"app\" WHERE \"status\" >= 500 AND \"level\" IS NOT NULL GROUP BY \"level\" ORDER BY n__ DESC LIMIT 10");
+    "SELECT \"level\", count(*) AS n__ FROM \"app\" WHERE (\"status\" >= 500) AND \"level\" IS NOT NULL GROUP BY \"level\" ORDER BY n__ DESC LIMIT 10");
   assert.equal(valuesSql("app", "", "level"),
     "SELECT \"level\", count(*) AS n__ FROM \"app\" WHERE \"level\" IS NOT NULL GROUP BY \"level\" ORDER BY n__ DESC LIMIT 10");
   assert.equal(valuesSql("a\"p", "", "x\"y"),

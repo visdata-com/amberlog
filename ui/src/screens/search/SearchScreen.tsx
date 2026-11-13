@@ -1,6 +1,7 @@
 // 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
+import { fieldSource } from './sqlCompletion.ts';
 import { Button } from "../../components/ui/Button.tsx";
 import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -22,13 +23,15 @@ import { type Chip, CondBox } from "./CondBox.tsx";
 import { conditionDraft } from "./conditionInput.ts";
 import { type Field, isStreamName } from "./fields.ts";
 import { FieldsBar, RECORD_GROUP, type ValueRow, type Values } from "./FieldsBar.tsx";
+import { applyPanelCondition, type PanelValue } from "./fieldConditions.ts";
 import {
   FULLTEXT_LIMIT_TEXT, FULLTEXT_LIMIT_US, FULLTEXT_NARROW_US, SQL_FULLTEXT_NOTE, fulltextBlocked, narrowOnAdd,
 } from "./fulltext.ts";
+import { applySqlPanelFilter, decodeQuery, rewriteWhere, sortRecordSql, type DecodedQuery } from "./queryCodec.ts";
 import { Histogram } from "./Histogram.tsx";
 import { buckets, chooseInterval, zoomRange } from "./histogram.ts";
 import {
-  type Condition, conditionSql, countSql, detailCondition, histogramSql, insertAtCursor, mentionsFulltext, searchSql,
+  type Condition, conditionSql, countSql, histogramSql, mentionsFulltext, searchSql,
   selectSql, timeColumns, valuesSql, whereClause,
 } from "./sql.ts";
 import { Table, columnsOf } from "./Table.tsx";
@@ -179,10 +182,11 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const [conditionError, setConditionError] = useState<string | null>(null);
   const nextId = useRef(1);
   const [sql, setSql] = useState("");
+  const sqlInput = useRef<{text: string; cursor: number; pasted: boolean} | null>(null);
   /** 切到 SQL 模式时填入的文本（TO-COND 据此判断改过没有）。 */
   const [sqlBase, setSqlBase] = useState("");
   const cursor = useRef<number | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [draftBase, setDraftBase] = useState<{ query: DecodedQuery; conditions: Condition[] } | null>(null);
   const [ascending, setAscending] = useState(false);
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [chart, setChart] = useState<Chart>({ kind: "none" });
@@ -190,7 +194,6 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const [launched, setLaunched] = useState<Launched | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   /** 上一次在条件模式下发起检索时条件框中的条件（已生效）。 */
-  const [appliedIds, setAppliedIds] = useState<ReadonlySet<number>>(new Set());
   const appliedChips = useRef<readonly Chip[]>([]);
   /** 分布请求与计数请求的编号：发起检索、改时区重发、「重画分布图」各取一个，晚到的旧应答丢弃。 */
   const totalSeq = useRef(0);
@@ -211,6 +214,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const [fieldsCollapsed, setFieldsCollapsed] = useState(loadFieldsCollapsed);
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set([RECORD_GROUP]));
   /** 展开了取值的字段（VALUES-SHOW）。 */
+  const valueVersion = useRef(0);
+  const valueRequests = useRef(new Map<string, number>());
+  const valueSeq = useRef(0);
   const [values, setValues] = useState<ReadonlyMap<string, Values>>(new Map());
   /** 正在显示的上下文结果；显示检索请求的结果时为 null。 */
   const [ctx, setCtx] = useState<Context | null>(null);
@@ -222,7 +228,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     const id = ++fieldsSeq.current;
     fieldsInFlight.current.set(s, id);
     const o = await req.fields(s, "fields:" + s);
-    if (fieldsInFlight.current.get(s) === id) fieldsInFlight.current.delete(s);
+    if (fieldsInFlight.current.get(s) !== id) return;
+    fieldsInFlight.current.delete(s);
     if (o === null || o.kind === "aborted") return;
     if (o.kind === "ok") {
       setTables((t) => new Map(t).set(s, o.fields));
@@ -238,7 +245,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
 
   /** 收起已展开的取值，中止尚未得到响应的取值请求（VALUES-RESET）。 */
   const resetValues = (): void => {
-    req.dropSlot("values");
+    valueVersion.current++;
+    for (const f of valueRequests.current.keys()) req.dropSlot("values:" + f);
+    valueRequests.current.clear();
     setValues(new Map());
   };
 
@@ -249,7 +258,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
       resetValues();
       setOpenGroups(new Set([RECORD_GROUP]));
     }
-    if (fetch && isStreamName(s) && !tables.has(s) && !fieldsInFlight.current.has(s)) void requestFields(s);
+    if (fetch && isStreamName(s) && !tables.has(s) && !fieldErrors.has(s) && !fieldsInFlight.current.has(s)) void requestFields(s);
   };
 
   useEffect(() => {
@@ -350,14 +359,31 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const ok = view.kind === "ok" ? view : null;
   const hits: readonly Hit[] = ok?.hits ?? [];
   const conditionColumns = table !== undefined ? table.map((f) => f.name) : columnsOf(hits);
-  const condPending = chips.length !== appliedIds.size || chips.some((c) => !appliedIds.has(c.id));
-  // SQL 模式：上一次在 SQL 模式下检索过时比 SQL 文本；否则切过来时的未生效条件仍算，另加对 SQL 文本的修改
-  const pending =
-    mode === "cond"
-      ? condPending || conditionInput.trim() !== ""
-      : launched?.mode === "sql"
-        ? sql !== launched.query.sql
-        : condPending || sql !== sqlBase;
+  const conditionText = (items: readonly Chip[] = chips): string => draftBase === null
+    ? searchSql(stream, items.map(c => c.cond), ascending, utf8)
+    : rewriteWhere(draftBase.query, items.map(c => c.cond), draftBase.conditions, utf8);
+  const draftText = mode === "cond" ? conditionText() : sql;
+  const decoded = decodeQuery(draftText);
+  const pending = (launched !== null ? draftText !== launched.query.sql : chips.length > 0 || mode === "sql" && sql !== sqlBase)
+    || conditionInput.trim() !== "";
+  const executed = launched === null ? null : decodeQuery(launched.query.sql);
+  const executedConditions = executed?.ok ? executed.groups : launched?.chips.map(c => c.cond) ?? [];
+  const displayedApplied = new Set(chips.filter(c => executedConditions.some(old => conditionSql(old, utf8) === conditionSql(c.cond, utf8))).map(c => c.id));
+  // Completion recognizes incomplete WHERE independently of the strict mode codec.
+  // A typed FROM prefix is never a confirmed metadata source.
+  const typedSql = sqlInput.current?.text === sql ? sqlInput.current : null;
+  const source = fieldSource(sql, current, typedSql === null || typedSql.pasted, typedSql?.cursor);
+  const completionDataset = source.kind === 'resolved' ? source.dataset : null;
+  const completionTable = completionDataset === null ? undefined : tables.get(completionDataset);
+  const completionErrors = completionDataset === null ? undefined : fieldErrors.get(completionDataset);
+  useEffect(() => {
+    if (mode !== 'sql' || completionDataset === null) return;
+    if (!tables.has(completionDataset) && !fieldErrors.has(completionDataset) && !fieldsInFlight.current.has(completionDataset)) void requestFields(completionDataset);
+    if (decoded.ok && decoded.dataset === completionDataset && completionDataset !== current) {
+      setStream(completionDataset);
+      determine(completionDataset, false);
+    }
+  }, [mode, completionDataset, tables, fieldErrors, decoded.ok ? decoded.dataset : null]);
   const blocked = mode === "cond" && fulltextBlocked(conds, range.length());
 
   /** 提交尚未回车的输入，返回同一次操作要使用的完整条件，避免读到旧 state。 */
@@ -392,25 +418,28 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     const [start, end] = r;
     // 发起检索结束上下文结果的显示（CONTEXT-BACK）；在途的上下文请求由 req.result 中止（CONTEXT-STALE）
     setCtx(null);
-    const where = mode === "cond" ? whereClause(queryConditions, utf8) : "";
-    const text = mode === "cond" ? selectSql(stream, where, ascending) : sql;
+    const text = mode === "cond" ? conditionText(queryChips) : sql;
+    // An explicit query confirms a final unquoted FROM name without a trailing space.
+    if (mode === "sql") sqlInput.current = null;
+    const parsed = decodeQuery(text);
+    const recordQuery = mode === "cond" && (draftBase === null || draftBase.query.normal);
+    const where = mode === "cond" ? whereClause(queryConditions, utf8) : parsed.ok ? whereClause(parsed.groups) : "";
     const query: Query = { sql: text, start_time: start, end_time: end, size: SIZE, from: 0 };
-    const l: Launched = { mode, query, chips: queryChips, stream, where };
-    resetValues();
+    const l: Launched = { mode: recordQuery ? "cond" : "sql", query, chips: queryChips, stream, where };
     setLaunched(l);
     if (mode === "cond") {
-      setAppliedIds(new Set(queryChips.map((c) => c.id)));
       appliedChips.current = queryChips;
     }
     const m = range.model;
     const at = nowUs();
     const kept = m.quick !== null ? { quick: m.quick } : { start, end };
     addHistory(
-      mode === "cond" ? { mode, stream, range: kept, conds: queryConditions, at } : { mode, range: kept, sql: text, at },
+      mode === "cond" && draftBase === null && !queryConditions.some(c => c.kind === "set")
+        ? { mode, stream, range: kept, conds: queryConditions, at } : { mode: "sql", range: kept, sql: text, at },
     );
     setSqlNote(mode === "sql" && mentionsFulltext(text) && end - start > FULLTEXT_LIMIT_US);
     runResult(l, query);
-    if (mode === "sql") {
+    if (!recordQuery) {
       totalSeq.current++;
       setHistInput(null);
       setChart({ kind: "none" });
@@ -424,41 +453,93 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     if (current !== null && isStreamName(current)) void requestFields(current);
   };
 
-  /** 能展开字段的取值（VALUES-REQUEST 的前提）。 */
-  const canExpand =
-    mode === "cond" &&
-    launched?.mode === "cond" &&
-    launched.stream === current &&
-    ![...values.values()].some((v) => v.kind === "loading");
+  // 字段统计独立于结果快照，只有显式展开/刷新才请求。
+  const fieldWhere = mode === "cond" ? whereClause(conds, utf8)
+    : decoded.ok ? whereClause(decoded.groups) : sql === sqlBase ? whereClause(conds, utf8) : null;
+  const fieldDataset = mode === "sql" && decoded.ok ? decoded.dataset : current;
+  const rm = range.model;
+  const timeKey = rm.quick !== null ? String(rm.quick) : `${rm.start}:${rm.end}`;
+  const fieldKey = JSON.stringify([fieldDataset, fieldWhere, timeKey]);
+  const contextRef = useRef(fieldKey);
+  // 每次上下文变更递增版本，A→B→A 也不能接受旧 A 的响应。
+  if (contextRef.current !== fieldKey) { contextRef.current = fieldKey; valueVersion.current++; }
+  useEffect(() => {
+    for (const f of valueRequests.current.keys()) req.dropSlot("values:" + f);
+    valueRequests.current.clear();
+    setValues(m => new Map([...m].map(([f, v]) => [f, v.kind === "loading"
+      ? {kind:"error" as const, lines:["筛选已变更，请刷新取值"], context: v.context} : v])));
+  }, [fieldKey]);
+  const canExpand = fieldDataset !== null && isStreamName(fieldDataset) && fieldWhere !== null
+    && range.length() !== null && range.length()! > 0n && !req.queryDisabled && !fulltextBlocked(conds, range.length());
 
-  const toggleField = async (f: string): Promise<void> => {
-    if (values.has(f)) {
-      setValues((m) => {
-        const n = new Map(m);
-        n.delete(f);
-        return n;
-      });
+  const toggleField = async (f: string, refresh = false): Promise<void> => {
+    if (values.has(f) && !refresh) {
+      req.dropSlot("values:" + f);
+      valueRequests.current.delete(f);
+      setValues(m => { const n = new Map(m); n.delete(f); return n; });
       return;
     }
-    if (!canExpand || launched === null || f === "_timestamp") return;
-    setValues((m) => new Map(m).set(f, { kind: "loading" }));
-    const q = launched.query;
-    const vq: Query = { sql: valuesSql(launched.stream, launched.where, f), start_time: q.start_time, end_time: q.end_time, size: 10, from: 0 };
-    const o = await req.inSlot("values", (signal) => postSearch(vq, signal));
-    if (o === null) return;
+    if (!canExpand || fieldDataset === null || fieldWhere === null || f === "_timestamp") return;
+    const times = range.resolve();
+    if (times === null) return;
+    const version = valueVersion.current, id = ++valueSeq.current;
+    valueRequests.current.set(f,id);
+    setValues(m => new Map(m).set(f, {kind:"loading", context:fieldKey}));
+    const vq: Query = {sql:valuesSql(fieldDataset, fieldWhere, f), start_time:times[0], end_time:times[1], size:10, from:0};
+    const o = await req.inSlot("values:" + f, signal => postSearch(vq,signal));
+    if (o === null || version !== valueVersion.current || valueRequests.current.get(f) !== id) return;
+    valueRequests.current.delete(f);
     let v: Values;
     if (o.kind === "ok") {
-      const rows: ValueRow[] = o.hits.map((h) => {
+      const rows: ValueRow[] = o.hits.map(h => {
         const x = h.get(f);
-        return { json: x === undefined ? "null" : toJsonText(x), isString: typeof x === "string", text: rawText(x), n: rawText(h.get("n__")) };
+        return {json:x === undefined ? "null" : toJsonText(x), isString:typeof x === "string", text:rawText(x), n:rawText(h.get("n__"))};
       });
-      v = { kind: "ok", rows };
-    } else if (o.kind === "http" && o.status === 400 && o.reason === "query_memory_exceeded") {
-      v = { kind: "error", lines: [VALUES_TOO_MANY] };
+      v = {kind:"ok", rows, context:fieldKey};
     } else {
-      v = { kind: "error", lines: errorLines(o) };
+      v = {kind:"error", context:fieldKey, lines:o.kind === "http" && o.status === 400 && o.reason === "query_memory_exceeded" ? [VALUES_TOO_MANY] : errorLines(o)};
     }
-    setValues((m) => (m.has(f) ? new Map(m).set(f, v) : m));
+    setValues(m => m.has(f) ? new Map(m).set(f,v) : m);
+  };
+
+  const importSql = (text: string): Chip[] | null => {
+    const parsed = decodeQuery(text);
+    if (!parsed.ok) { setConditionError(parsed.error); return null; }
+    const next = parsed.groups.map(cond => ({id:nextId.current++, cond}));
+    setChips(next);
+    setDraftBase({query:parsed,conditions:parsed.groups});
+    setSqlBase(text);
+    setStream(parsed.dataset);
+    determine(parsed.dataset,true);
+    setConditionError(null);
+    return next;
+  };
+
+  const addFieldValue = (field: string, exclude: boolean, value: PanelValue): void => {
+    if (mode === "sql") {
+      const result = applySqlPanelFilter(sql, field, exclude, value);
+      if (result.kind === "error") { setConditionError(result.error); return; }
+      setConditionError(null);
+      if (result.kind === "unchanged") return;
+      const parsed = decodeQuery(result.sql);
+      setSql(result.sql);
+      // Mixed SQL stays authoritative; never use old chips as its conversion baseline.
+      if (parsed.ok) {
+        setChips(parsed.groups.map(cond => ({id: nextId.current++, cond})));
+        setSqlBase(result.sql);
+        setDraftBase({query:parsed, conditions:parsed.groups});
+      } else {
+        setSqlBase("");
+        setDraftBase(null);
+        setChips([]);
+      }
+      setStream(result.dataset);
+      return;
+    }
+    const result = applyPanelCondition(chips,field,exclude,value,()=>nextId.current++,utf8);
+    if (result.kind === "error") { setConditionError(result.error); return; }
+    setConditionError(null);
+    if (result.kind === "changed") setChips(result.chips);
   };
 
   /** 发结果请求；成功时结果表改按这次请求显示。 */
@@ -500,12 +581,13 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     setConditionError(null);
     if ("quick" in it.range) range.setQuick(it.range.quick);
     else range.setRange(it.range.start, it.range.end);
-    setConfirming(false);
+    setDraftBase(null);
     cursor.current = null;
     if (it.mode === "sql") {
       setChips([]);
+      const restored = importSql(it.sql);
       setSql(it.sql);
-      setSqlBase(it.sql);
+      setSqlBase(restored === null ? "" : it.sql);
       setMode("sql");
       return;
     }
@@ -516,7 +598,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
         return k < 0 ? { id: nextId.current++, cond } : { id: unused.splice(k, 1)[0]!.id, cond };
       }),
     );
-    if (it.stream !== stream) changeStream(it.stream);
+    setStream(it.stream);
     // 恢复数据集即确定一次当前数据集（CURRENT-DATASET；数据集没变时也按 FIELDS-REQUEST 判断要不要发）
     determine(it.stream, true);
     setMode("cond");
@@ -527,16 +609,17 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     if (m === "sql") {
       const next = prepareConditions();
       if (next === null) return;
-      const text = searchSql(stream, next.map((c) => c.cond), ascending, utf8);
+      const text = conditionText(next);
+      const parsed = decodeQuery(text, false);
+      if (parsed.ok) setDraftBase({query:parsed,conditions:next.map(c=>c.cond)});
       setSql(text);
       setSqlBase(text);
       cursor.current = null;
-      setConfirming(false);
+      setConditionError(null);
       setMode("sql");
-    } else if (sql === sqlBase) {
+    } else if (sql === sqlBase || importSql(sql) !== null) {
+      setConditionError(null);
       setMode("cond");
-    } else {
-      setConfirming(true);
     }
   };
 
@@ -549,6 +632,16 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
   const changeStream = (s: string): void => {
     req.dropContext();
     setStream(s);
+    if (draftBase !== null) {
+      const q = draftBase.query;
+      const changed = q.sql.slice(0,q.tableStart) + '"'+s.replaceAll('"','""')+'"' + q.sql.slice(q.tableEnd);
+      const parsed = decodeQuery(changed,false);
+      if (parsed.ok) setDraftBase({...draftBase,query:parsed});
+    }
+    if (mode === "sql") {
+      const q = decodeQuery(sql,false);
+      if (q.ok) setSql(sql.slice(0,q.tableStart) + '"'+s.replaceAll('"','""')+'"' + sql.slice(q.tableEnd));
+    }
   };
 
   /** 详情里的行（上下文结果或检索请求的结果）。 */
@@ -662,7 +755,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
           }
           mode={mode}
           chips={chips}
-          applied={appliedIds}
+          applied={displayedApplied}
           columns={conditionColumns}
           input={conditionInput}
           error={conditionError}
@@ -675,26 +768,28 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             const v = values.get(f);
             return v?.kind === "ok" ? v.rows : null;
           }}
+          sqlMetadata={{
+            datasets: list.map(streamOf),
+            fields: (completionTable ?? []).map(f => f.name),
+            loading: completionDataset !== null && completionTable === undefined && completionErrors === undefined,
+            errors: completionErrors ?? [],
+            onRetry: () => { if (completionDataset !== null && !fieldsInFlight.current.has(completionDataset)) void requestFields(completionDataset); },
+          }}
           sql={sql}
-          confirming={confirming}
           onAdd={addCondition}
           onRemove={(id) => setChips(chips.filter((c) => c.id !== id))}
           onMode={switchMode}
-          onSql={(text, at) => {
+          onSql={(text, at, inputType) => {
+            sqlInput.current = {text, cursor: at, pasted: inputType === 'insertFromPaste'};
             setSql(text);
+            setConditionError(null);
             cursor.current = at;
           }}
           onCursor={(at) => {
             cursor.current = at;
           }}
-          onConfirm={(discard) => {
-            setConfirming(false);
-            if (discard) {
-              setSql(sqlBase);
-              setMode("cond");
-            }
-          }}
         />
+        {mode === "cond" && draftBase !== null && !draftBase.query.normal && <p className="hint">已保留 SQL 中的投影、分组、排序或条数限制；这些内容可在 SQL 模式编辑。</p>}
         {blocked && (
           <p className="hint" id="s-limit">
             {FULLTEXT_LIMIT_TEXT}
@@ -720,8 +815,10 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
             }}
             values={values}
             canExpand={canExpand}
+            context={fieldKey}
+            onRefresh={(f) => void toggleField(f, true)}
             onToggleField={(f) => void toggleField(f)}
-            onAdd={(f, negate, v) => addCondition(detailCondition(f, negate, v))}
+            onAdd={addFieldValue}
             onCollapse={() => {
               saveFieldsCollapsed(true);
               setFieldsCollapsed(true);
@@ -845,10 +942,19 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 center={ctx?.center ?? -1}
                 onSort={() => {
                   if (shown === null || shown.launched.mode !== "cond") return;
-                  const l = shown.launched;
                   const asc = !ascending;
                   setAscending(asc);
-                  resend({ ...shown.query, sql: selectSql(l.stream, l.where, asc), from: 0 });
+                  if (draftBase !== null) {
+                    const sorted = decodeQuery(sortRecordSql(draftBase.query.sql, asc), false);
+                    if (sorted.ok) setDraftBase({...draftBase, query:sorted});
+                  }
+                  const sortedSql = draftBase === null
+                    ? selectSql(shown.launched.stream, shown.launched.where, asc)
+                    : sortRecordSql(shown.query.sql, asc);
+                  const query = {...shown.query, sql:sortedSql, from:0};
+                  const l = {...shown.launched, query};
+                  setLaunched(l);
+                  runResult(l, query);
                 }}
                 onHide={(c) => setHiddenCols(new Set([...hiddenCols, c]))}
                 onOpen={(i) => {
@@ -868,16 +974,8 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               }}
               timeKeys={timeKeys}
               textTerms={terms}
-              onAdd={(c) => {
-                // 条件模式加入未生效的条件，SQL 模式插到光标处（DETAIL-ADD）；都不发请求
-                if (mode === "cond") {
-                  addCondition(c);
-                  return;
-                }
-                const r = insertAtCursor(sql, cursor.current, conditionSql(c));
-                setSql(r.sql);
-                cursor.current = r.cursor;
-              }}
+              onAdd={addFieldValue}
+              filterError={conditionError}
               pending={pending}
               onClose={() => setDetail(null)}
               onCloseAndQuery={() => {

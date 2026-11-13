@@ -1,0 +1,42 @@
+.sql-editor { min-width: 0; width: 100%; }
+.sql-input-wrap { position: relative; background: var(--panel); border-radius: var(--radius-sm); }
+.sql-input-wrap .sql-highlight,
+#search .condbox .sql-input-wrap textarea {
+  box-sizing: border-box;
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: normal;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  padding: 9px;
+  border: 1px solid transparent;
+  margin: 0;
+  width: 100%;
+}
+.sql-input-wrap .sql-highlight { position: absolute; inset: 0; height: 100%; overflow: hidden; pointer-events: none; color: var(--text); }
+#search .condbox .sql-input-wrap textarea {
+  position: relative; display: block; min-height: 160px;
+  color: transparent; caret-color: var(--text); background: transparent;
+  border-color: var(--line-strong); resize: vertical;
+}
+#search .condbox .sql-input-wrap textarea::selection { background: color-mix(in srgb, var(--link) 25%, transparent); }
+.sql-keyword { color: var(--link); }
+.sql-string { color: var(--success); }
+.sql-number { color: var(--warning); }
+.sql-comment { color: var(--muted); }
+.sql-ident { color: var(--text); }
+.sql-options {
+  position: fixed; z-index: 1000; box-sizing: border-box; margin: 0; padding: 4px 0;
+  list-style: none; overflow: auto; overscroll-behavior: contain;
+  background: var(--panel-raised); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); box-shadow: 0 4px 16px #0002;
+}
+.sql-options li { height: 32px; box-sizing: border-box; padding: 5px 10px; display: flex; gap: 12px; justify-content: space-between; cursor: pointer; }
+.sql-options li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-options small { flex: none; color: var(--muted); }
+.sql-options [aria-selected="true"], .sql-options li:hover { background: var(--panel-subtle); outline: 1px solid var(--line); outline-offset: -1px; }
+@media (forced-colors: active) {
+  .sql-highlight { visibility: hidden; }
+  #search .condbox .sql-input-wrap textarea { color: CanvasText; }
+}

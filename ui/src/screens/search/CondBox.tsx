@@ -1,11 +1,13 @@
 // 检索屏的条件框（REQ-AMB-UI-SEARCH-V2-MODES、FIELD-COND、TEXT-COND、COND-REMOVE、STAGED、INPUT-HINTS、TO-SQL、TO-COND）：
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
+import { SqlEditor, type SqlEditorProps } from './SqlEditor.tsx';
 import { Input } from "../../components/ui/Input.tsx";
-import type { ComponentChildren as ReactNode, TargetedKeyboardEvent as KeyboardEvent, TargetedEvent as SyntheticEvent } from "preact";
+import type { ComponentChildren as ReactNode, TargetedKeyboardEvent as KeyboardEvent } from "preact";
 import { useState } from "preact/hooks";
 import type { ValueRow } from "./FieldsBar.tsx";
 import { conditionDraft, conditionHints, type ConditionHint } from "./conditionInput.ts";
+import { equalitySql } from "./equality.ts";
 import type { Condition } from "./sql.ts";
 
 export interface Chip {
@@ -14,12 +16,14 @@ export interface Chip {
 }
 
 export function chipText(c: Condition): string {
+  if (c.kind === "set") return equalitySql(c);
   if (c.kind === "text") return "全文 " + c.text;
   return c.op === "IS NULL" || c.op === "IS NOT NULL" ? c.field + " " + c.op : c.field + " " + c.op + " " + c.value;
 }
 
 export interface CondBoxProps {
   toolbar?: ReactNode;
+  sqlMetadata: Pick<SqlEditorProps, "datasets" | "fields" | "loading" | "errors" | "onRetry">;
   mode: "cond" | "sql";
   chips: readonly Chip[];
   /** 已生效的条件（上一次发起检索时条件框中的那些）。 */
@@ -32,13 +36,11 @@ export interface CondBoxProps {
   onInput: (text: string) => void;
   onError: (error: string) => void;
   sql: string;
-  confirming: boolean;
   onAdd: (c: Condition) => void;
   onRemove: (id: number) => void;
   onMode: (m: "cond" | "sql") => void;
-  onSql: (text: string, cursor: number) => void;
+  onSql: (text: string, cursor: number, inputType?: string) => void;
   onCursor: (cursor: number) => void;
-  onConfirm: (discard: boolean) => void;
 }
 
 export function CondBox(p: CondBoxProps) {
@@ -97,7 +99,6 @@ export function CondBox(p: CondBoxProps) {
       p.onRemove(p.chips[p.chips.length - 1]!.id);
     }
   };
-  const cursorOf = (e: SyntheticEvent<HTMLTextAreaElement>): void => p.onCursor(e.currentTarget.selectionStart);
 
   return (
     <div className="condbox">
@@ -115,9 +116,9 @@ export function CondBox(p: CondBoxProps) {
       {p.mode === "cond" ? (
         <div className="condition-editor">
           <div className={p.error === null ? "chips" : "chips invalid"} id="s-conds">
-            {p.chips.map((c) => (
+            {p.chips.map((c, index) => (
               <span key={c.id} className={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
-                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{chipText(c.cond)}</span>
+                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{index > 0 ? "AND · " : ""}{chipText(c.cond)}</span>
                 <button type="button" className="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
                   ×
                 </button>
@@ -178,29 +179,9 @@ export function CondBox(p: CondBoxProps) {
           {guidance !== null && <span className="cond-guide" id="s-cond-guide">{guidance}</span>}
         </div>
       ) : (
-        <textarea
-          id="s-sql"
-          spellcheck={false}
-          aria-label="SQL"
-          placeholder="输入 SQL，如 SELECT * FROM app"
-          value={p.sql}
-          onInput={(e) => p.onSql(e.currentTarget.value, e.currentTarget.selectionStart)}
-          onClick={cursorOf}
-          onKeyUp={cursorOf}
-          onSelect={cursorOf}
-        />
+        <SqlEditor sql={p.sql} onSql={p.onSql} onCursor={p.onCursor} {...p.sqlMetadata} />
       )}
-      {p.confirming && (
-        <div className="confirm" id="s-confirm">
-          <span>切回条件会放弃对 SQL 的修改</span>
-          <button type="button" id="s-confirm-discard" onClick={() => p.onConfirm(true)}>
-            放弃修改并切回
-          </button>
-          <button type="button" id="s-confirm-stay" onClick={() => p.onConfirm(false)}>
-            留在 SQL
-          </button>
-        </div>
-      )}
+      {p.mode === "sql" && p.error !== null && <p className="cond-error" role="alert">{p.error}</p>}
     </div>
   );
 }

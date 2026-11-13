@@ -1,9 +1,12 @@
 // 检索屏的条件与 SQL：胶囊切分（REQ-AMB-UI-SEARCH-V2-FIELD-COND、TEXT-COND）、
 // 字面量（LITERAL）、条件写成 SQL（SQL-GEN、HIST-REQUEST、TOTAL、VALUES-REQUEST）与系统表时刻列（TIME-COLUMNS）。
 
+import { equalitySql, type Equality } from "./equality.ts";
+
 export type FieldOp = "=" | "!=" | "<" | "<=" | ">" | ">=" | "LIKE" | "IS NULL" | "IS NOT NULL";
 
 export type Condition =
+  | Equality
   | { kind: "field"; field: string; op: FieldOp; value: string }
   | { kind: "text"; text: string };
 
@@ -77,6 +80,7 @@ export function literal(op: FieldOp, value: string, utf8 = false): string {
 }
 
 export function conditionSql(c: Condition, utf8: Utf8Fields = NO_TABLE): string {
+  if (c.kind === "set") return equalitySql(c);
   if (c.kind === "text") return "match_all(" + sqlString(c.text) + ")";
   if (c.op === "IS NULL" || c.op === "IS NOT NULL") return quoteIdent(c.field) + " " + c.op;
   return quoteIdent(c.field) + " " + c.op + " " + literal(c.op, c.value, utf8(c.field));
@@ -106,10 +110,10 @@ export function countSql(stream: string, where: string): string {
   return "SELECT count(*) AS n FROM " + quoteIdent(stream) + where;
 }
 
-/** 取值请求（REQ-AMB-UI-SEARCH-V2-VALUES-REQUEST）：`where` 为最近一次检索请求的 ` WHERE ` 部分（不含 ` ORDER BY`）。 */
+/** 取值请求（REQ-AMB-UI-SEARCH-V2-VALUES-REQUEST）：`where` 为当前草稿的 ` WHERE ` 部分（不含 ` ORDER BY`）。 */
 export function valuesSql(stream: string, where: string, field: string): string {
   const f = quoteIdent(field);
-  const notNull = (where === "" ? " WHERE " : where + " AND ") + f + " IS NOT NULL";
+  const notNull = (where === "" ? " WHERE " : " WHERE (" + where.replace(/^\s*WHERE\s+/i, "").trim() + ") AND ") + f + " IS NOT NULL";
   return "SELECT " + f + ", count(*) AS n__ FROM " + quoteIdent(stream) + notNull + " GROUP BY " + f + " ORDER BY n__ DESC LIMIT 10";
 }
 
@@ -120,17 +124,6 @@ export const valueText = (v: { json: string; isString: boolean; text: string }):
 /** 从单条详情加入：字符串值以 `"` 括起，其余取原始 JSON 文本（REQ-AMB-UI-SEARCH-DETAIL-ADD）。 */
 export function detailCondition(field: string, negate: boolean, value: { json: string; isString: boolean; text: string }): Condition {
   return { kind: "field", field, op: negate ? "!=" : "=", value: valueText(value) };
-}
-
-/**
- * SQL 模式下从详情插入条件：插到光标处，光标前一个字符存在且不是空白时先补一个空格。
- * 返回新文本与插入之后的光标位置。
- */
-export function insertAtCursor(sql: string, cursor: number | null, snippet: string): { sql: string; cursor: number } {
-  const at = cursor === null ? sql.length : Math.max(0, Math.min(cursor, sql.length));
-  const before = sql.slice(0, at);
-  const piece = before !== "" && !/\s$/.test(before) ? " " + snippet : snippet;
-  return { sql: before + piece + sql.slice(at), cursor: at + piece.length };
 }
 
 /** SQL 文本含不区分大小写的 `match_all` 或 `str_match`（REQ-AMB-UI-SEARCH-SQL-FULLTEXT-NOTE）。 */
