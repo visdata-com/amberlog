@@ -6,12 +6,19 @@ export const SCREEN_PATHS: Record<Screen, string> = {
   recon: "/reconciliation",
 };
 
+function normalizedPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, "") || "/";
+  return trimmed === "/ui" ? "/" : trimmed.startsWith("/ui/") ? trimmed.slice(3) : trimmed;
+}
+
 export function isKnownPath(path: string): boolean {
-  return path === "/ui" || path === "/ui/" || Object.values(SCREEN_PATHS).some((screen) => path === `/ui${screen}`);
+  const normalized = normalizedPath(path);
+  return normalized === "/" || Object.values(SCREEN_PATHS).some((screen) => normalized === screen);
 }
 
 export function screenFromPath(path: string): Screen {
-  if (path === `/ui${SCREEN_PATHS.ledger}`) return "ledger";
-  if (path === `/ui${SCREEN_PATHS.recon}`) return "recon";
+  const normalized = normalizedPath(path);
+  if (normalized === SCREEN_PATHS.ledger) return "ledger";
+  if (normalized === SCREEN_PATHS.recon) return "recon";
   return "search";
 }

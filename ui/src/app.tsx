@@ -13,7 +13,6 @@ import { TimeZonePicker } from "./shell/TimeZonePicker.tsx";
 import { Select } from "./shell/Select.tsx";
 import {
   confirmToken,
-  setScreen,
   setTheme,
   setToken,
   settings,
@@ -41,12 +40,14 @@ export function applyTheme(theme: Theme): void {
 
 function TopBar() {
   const s = useStore(settings);
+  const { path, route } = useLocation();
+  const screen = screenFromPath(path);
   return (
     <header className="topbar">
       <span className="brand">Amberlog</span>
       <nav>
         {SCREENS.map((x) => (
-          <button key={x.id} type="button" data-screen={x.id} aria-selected={s.screen === x.id} onClick={() => setScreen(x.id)}>
+          <button key={x.id} type="button" data-screen={x.id} aria-selected={screen === x.id} onClick={() => route(`/ui${SCREEN_PATHS[x.id]}`)}>
             {x.label}
           </button>
         ))}

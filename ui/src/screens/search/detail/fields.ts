@@ -68,7 +68,7 @@ export function prettyJson(v: Json, indent = ""): string {
   return JSON.stringify(v);
 }
 
-/** 字段的取值写成「加入」所需的形状（`detailCondition` 的参数）。 */
+/** 字段的取值写成「加入」所需的形状（面板共用标量适配的输入）。 */
 export function addValue(v: Json): { json: string; isString: boolean; text: string } {
   return { json: toJsonText(v), isString: typeof v === "string", text: typeof v === "string" ? v : "" };
 }
