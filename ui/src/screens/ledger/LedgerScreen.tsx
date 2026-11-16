@@ -11,18 +11,18 @@ import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
 import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
-import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
 import { Bytes, Count } from "./Numbers.tsx";
 import "./ledger.css";
 
 const SIZE = 1000;
-const QUICK: QuickChoice[] = [
+const QUICK: readonly QuickChoice[] = [
   { label: "最近 1 小时", us: HOUR_US },
   { label: "最近 24 小时", us: 24n * HOUR_US },
   { label: "最近 7 天", us: 7n * DAY_US },
   { label: "最近 30 天", us: 30n * DAY_US },
 ];
-
 const STATUS: Record<string, string> = {
   active: "未停用",
   disabled_format_version: "已停用（格式版本不兼容）",
@@ -177,7 +177,7 @@ export function LedgerScreen({ hidden }: { hidden: boolean }) {
   return (
     <section id="ledger" class="screen" hidden={hidden}>
       <div class="bar">
-        <TimeRangeInputs range={range} prefix="l" />
+        <TimeRangePicker range={range} prefix="l" hidden={hidden} />
         <button type="button" id="l-query" class="primary" disabled={req.queryDisabled} onClick={() => void query()}>
           {req.running ? "查询中" : "查询"}
         </button>

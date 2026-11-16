@@ -201,7 +201,6 @@ button:focus-visible {
 }
 
 textarea,
-.time-input,
 .time {
   font-family: "Noto Sans Mono CJK SC", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -339,9 +338,6 @@ main {
 }
 
 .bar textarea { flex: 1; min-width: 320px; min-height: 2.2em; }
-
-.range { display: inline-flex; align-items: center; gap: 5px; }
-.time-input { width: 17em; }
 
 .modes button[aria-pressed="true"] {
   background: var(--button);
@@ -626,12 +622,9 @@ tbody tr:last-child td { border-bottom: none; }
   .topbar .field > input,
   .topbar .field > .custom-select { flex: 1; min-width: 0; }
   .bar,
-  .range,
-  .range > * { width: 100%; }
-  .range { flex-wrap: wrap; }
-  .range .arrow { width: auto; }
-  .time-input,
+  .bar > .time-range-picker,
   .bar textarea { min-width: 0; width: 100%; }
+  .bar .time-range-summary { width: 100%; }
   th,
   td { padding: 5px 7px; }
   .bar > .dataset-input { width: 100%; min-width: 0; }
