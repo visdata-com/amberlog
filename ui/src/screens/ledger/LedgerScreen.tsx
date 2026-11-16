@@ -9,6 +9,7 @@ import { setDatasets, streamOf } from "../../shell/datasets.ts";
 import { entries } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
+import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
 import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
 import { Bytes, Count } from "./Numbers.tsx";
@@ -180,7 +181,7 @@ export function LedgerScreen({ hidden }: { hidden: boolean }) {
         prefix="l"
         initial={{ title: "查看数据集台账", description: "选择时间范围，点击「查询」查看数据集的存储情况与对账汇总。" }}
         emptyDescription="当前时间范围内没有台账记录，可以扩大时间范围后重新查询。"
-        render={(hits) => <LedgerTable hits={hits} onJump={jump} />}
+        render={(hits) => <TableScroll rows={hits} label="数据资产台账"><LedgerTable hits={hits} onJump={jump} /></TableScroll>}
       />
     </section>
   );
