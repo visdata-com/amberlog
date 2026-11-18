@@ -4,7 +4,7 @@ import type { Outcome } from "./api.ts";
 import { errorLines, isTooMany, retrySeconds } from "./errors.ts";
 
 const http = (status: number, reason: string | null, message: string | null, retryAfter: string | null = null): Outcome =>
-  ({ kind: "http", status, reason, message, retryAfter });
+  ({ kind: "http", status, reason, message, retryAfter, requestId: null });
 
 test("出错时各条的文字", () => {
   assert.deepEqual(errorLines(http(429, "too_many_queries", "m")), ["服务繁忙：同时执行的查询已满"]);

@@ -924,6 +924,57 @@ fn alr_rules_result_matches_search() {
 }
 
 #[test]
+fn alr_rules_system_identity() {
+    use common::authz::{ServiceToken, authz_file_value, token_entry, write};
+    let f = Fixture::new();
+    let rx = Receiver::http();
+    let clock = clock();
+    // 授权文件只登记写入者 W：没有查询者、治理查看者或管理员的条目
+    let w = ServiceToken::generate();
+    let file = write(
+        &f,
+        &[token_entry(
+            "w",
+            &w,
+            r#"[{ role = "writer", streams = ["app"] }]"#,
+        )],
+    );
+    let file = authz_file_value(&file);
+    let s = serve(
+        &f,
+        clock,
+        &[
+            hooked("h", &rx).str("sql", "SELECT * FROM hr"),
+            hooked("l", &rx).str("sql", "SELECT dataset FROM _ledger"),
+        ],
+        &[
+            ("alerts.max_concurrency", Some("2")),
+            ("auth.authz_file", Some(file.as_str())),
+        ],
+        &[],
+    );
+    has_one(&s, clock);
+    has_data(&s, clock, "hr", &[r#"{"k":1}"#]);
+    let t = tick_at_least(clock, Duration::from_secs(5));
+    let h = wait_request(&rx, "h", t, Duration::from_secs(120));
+    let l = wait_request(&rx, "l", t, Duration::from_secs(60));
+    assert_eq!(of_rule(&rx, "h").len(), 1, "{:?}", of_rule(&rx, "h"));
+    assert_eq!(of_rule(&rx, "l").len(), 1, "{:?}", of_rule(&rx, "l"));
+    assert!(!h.json()["rows"].as_array().unwrap().is_empty());
+    let rows = l.json()["rows"].clone();
+    for d in ["default/app", "default/hr"] {
+        assert!(
+            rows.as_array().unwrap().contains(&json!({"dataset": d})),
+            "{rows}"
+        );
+    }
+    for rule in ["h", "l"] {
+        let row = wait_evaluation(&s, rule, t);
+        assert_eq!(text(&row, "outcome"), Some("matched"), "{row}");
+    }
+}
+
+#[test]
 fn alr_rules_not_counted_as_search() {
     let f = Fixture::new();
     let rx = Receiver::http();

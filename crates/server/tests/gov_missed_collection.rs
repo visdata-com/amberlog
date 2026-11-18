@@ -1,9 +1,10 @@
-//! REQ-AMB-GOV-MISSED-COLLECTION 的系统测试：以子进程运行
+//! REQ-AMB-GOV-MISSED-COLLECTION-V2 的系统测试：以子进程运行
 //! `amberlog`（`log.format` 为缺省的 json），经 `_json`、`_sent` 写入，经 `_reconciliation`、`_ledger` 与 `/metrics`
 //! 观察判定，逐行解析 stderr 里的稳定事件。对象存储用 `file://` 临时目录。
 //!
 //! 块的「场景共同前提」：`reconciliation.grace` 为 `1m`，场景开始时已开始受理请求超过 2 分钟，记录带
-//! `X-Amberlog-Source: fw-1`，迟到的摄取与上报之后等 150 秒再断言判定（[`SETTLE`]）。
+//! `X-Amberlog-Source: fw-1`，迟到的摄取与上报之后等 150 秒再断言判定（[`SETTLE`]）。要等过基线的三个场景另写了
+//! 时长：「转为缺失时打一次事件」「一个数据集的计数对象坏了」超过 22 分钟，「来源停报时打一次上报中断事件」超过 5 分钟。
 //!
 //! 「转为缺失」的四个场景是长时场景：没有已有结论的窗口只在它结束加宽限期晚于基线时刻时
 //! 才算转为缺失，块场景的 W 是此前第 20 分钟，实例要先运行 22 分钟。设了 `TESTBED_SOAK_HOURS`（跑满时长的长时运行）时
@@ -27,6 +28,8 @@ use serde_json::{Value, json};
 
 const FW1: Option<&str> = Some("fw-1");
 const PREMISE: Duration = Duration::from_secs(120);
+/// 场景「来源停报时打一次上报中断事件」要求开始受理请求超过的时长。
+const SILENT_PREMISE: Duration = Duration::from_secs(5 * 60);
 
 fn soak() -> bool {
     std::env::var_os("TESTBED_SOAK_HOURS").is_some()
@@ -482,6 +485,7 @@ fn missed_collection_no_event_after_restart() {
 #[test]
 fn missed_collection_event_source_silent() {
     let i = premise();
+    i.wait_accepting(SILENT_PREMISE);
     let (w1, w2) = (minute_ago(5), minute_ago(4));
     report(&i.server, "app", "fw-1", w1, 0);
     report(&i.server, "app", "fw-1", w2, 0);

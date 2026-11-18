@@ -11,8 +11,8 @@ export type ResultView =
   | { kind: "idle" }
   | { kind: "running"; since: number; prev: ResultView }
   | { kind: "ok"; hits: Hit[]; size: number; body: Map<string, Json> }
-  | { kind: "error"; lines: string[]; keep?: ResultView }
-  | { kind: "busy"; until: number; keep?: ResultView }
+  | { kind: "error"; lines: string[]; requestId: string | null; keep?: ResultView }
+  | { kind: "busy"; until: number; requestId: string | null; keep?: ResultView }
   | { kind: "cancelled"; keep?: ResultView }
   | { kind: "invalidTime" };
 
@@ -68,14 +68,17 @@ export class ResultRequest {
 
   /** 结果请求失败的呈现：429 倒计时，其余按出错各条；`keep` 为出错文字之下保留的原结果。 */
   private fail(o: Outcome, keep: ResultView | undefined): void {
+    // 出错文字旁另显示的请求编号（ERR-REQUEST-ID）；连接失败没有响应
+    const requestId = o.kind === "http" ? o.requestId : null;
     if (isTooMany(o)) {
       this.busyUntil = Date.now() + retrySeconds(o) * 1000;
       clearTimeout(this.busyTimer);
       this.busyTimer = setTimeout(() => this.notify(), this.busyUntil - Date.now());
-      this.setView(keep === undefined ? { kind: "busy", until: this.busyUntil } : { kind: "busy", until: this.busyUntil, keep });
+      const until = this.busyUntil;
+      this.setView(keep === undefined ? { kind: "busy", until, requestId } : { kind: "busy", until, requestId, keep });
     } else {
       const lines = errorLines(o);
-      this.setView(keep === undefined ? { kind: "error", lines } : { kind: "error", lines, keep });
+      this.setView(keep === undefined ? { kind: "error", lines, requestId } : { kind: "error", lines, requestId, keep });
     }
   }
 

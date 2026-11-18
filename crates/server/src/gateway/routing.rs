@@ -4,12 +4,16 @@
 //! - 已注册路径上不支持的方法（含 `HEAD` 与 `OPTIONS`）：405 `method_not_allowed`，带 `Allow`。
 //!   axum 的 `get` 路由默认兼接 `HEAD`，所以端点一律经 [`Endpoint`] 注册，由它把 `HEAD` 显式拒掉。
 //! - axum 与提取器自带的错误响应（空体或纯文本体）在出口改写为错误信封。
+//!
+//! 出口另给每个最终响应补安全响应头（REQ-AMB-ERR-ENVELOPE-V8）：全部响应带 `X-Content-Type-Options: nosniff`；路径落在
+//! 认证区（`/api/` 前缀、`/metrics`、目录前缀，按未经百分号解码的路径）的带 `Cache-Control: no-store`，与 `auth.enabled` 无关。
 
 use amberlog_common::error::Reason;
 use axum::Router;
+use axum::extract::Request;
 use axum::handler::Handler;
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter};
 
@@ -98,11 +102,27 @@ pub(crate) fn recovering(router: Router) -> Router {
         .layer(middleware::from_fn(recover::catch_panic))
 }
 
-/// 最外两层：错误响应改写与 `x-request-id`（后者在最外，使每个最终响应都带上它）。
+/// 最外三层：错误响应改写、安全响应头与 `x-request-id`（后者在最外，使每个最终响应都带上它）。
 pub(crate) fn outer_layers(router: Router) -> Router {
     router
         .layer(middleware::map_response(normalize))
+        .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(request_id::propagate))
+}
+
+/// `nosniff` 给全部响应，`no-store` 给认证区内的路径（含错误响应与 `HEAD`）。
+async fn security_headers(req: Request, next: Next) -> Response {
+    let no_store = crate::authz::matrix::in_auth_zone(req.uri().path());
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if no_store {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    res
 }
 
 pub(crate) async fn not_found() -> ApiError {

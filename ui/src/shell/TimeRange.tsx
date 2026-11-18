@@ -1,4 +1,4 @@
-// 某屏的时间范围（REQ-AMB-UI-CONSOLE-TIME-INPUT、QUICK-RANGE、TIME-RANGE-KEPT）：以 UTC 微秒保存；起止框的文字只在
+// 某屏的时间范围（REQ-AMB-UI-CONSOLE-V4-TIME-INPUT、QUICK-RANGE、TIME-RANGE-KEPT）：以 UTC 微秒保存；起止框的文字只在
 // 用户编辑该框之后按所选时区换算一次，快捷项、缩放与跳转写入的是时刻；改时区只重显框里的写法，不改范围。
 
 import { useEffect, useMemo } from "preact/hooks";
@@ -21,6 +21,8 @@ export interface RangeModel {
   /** 用户编辑中的文字；null 为按 start / end 与所选时区显示。 */
   startText: string | null;
   endText: string | null;
+  /** 选了快捷项、且自选定以来已按它发出过结果请求（检索屏的摘要据此显示实际取的起止，REQ-AMB-UI-SEARCH-V4-RANGE）。 */
+  queried?: boolean;
 }
 
 export class TimeRange {
@@ -37,14 +39,17 @@ export class TimeRange {
     return this.store.get();
   }
 
-  /** 发结果请求前调：快捷项按此刻 T 取 `[T − N, T)` 并写回起止；有一框为空或写法不合时为 null。 */
+  /**
+   * 发结果请求前调：快捷项按此刻 T 取 `[T − N, T)` 并写回起止；有一框为空或写法不合、或起点不早于止点时为 null
+   * （REQ-AMB-UI-CONSOLE-V4-TIME-INPUT-INVALID）。
+   */
   resolve(now: bigint = nowUs()): [bigint, bigint] | null {
     const m = this.model;
     if (m.quick !== null) {
-      this.store.set({ start: now - m.quick, end: now, startText: null, endText: null });
+      this.store.set({ start: now - m.quick, end: now, startText: null, endText: null, queried: true });
       return [now - m.quick, now];
     }
-    if (m.start === null || m.end === null) return null;
+    if (m.start === null || m.end === null || m.start >= m.end) return null;
     this.store.set({ startText: null, endText: null });
     return [m.start, m.end];
   }
@@ -64,7 +69,7 @@ export class TimeRange {
   /** 选快捷项：起止框先按此刻显示，发请求时再按发出时刻取。 */
   setQuick(us: bigint): void {
     const now = nowUs();
-    this.store.set({ quick: us, start: now - us, end: now, startText: null, endText: null });
+    this.store.set({ quick: us, start: now - us, end: now, startText: null, endText: null, queried: false });
   }
 
   /** 用户编辑起点或止点框：按此刻的所选时区换算，改为自定义范围。 */

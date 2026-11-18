@@ -459,34 +459,56 @@ pub fn previous(bytes: &[u8]) -> Result<Previous, String> {
     }
 }
 
-/// 回执 JSON 中的链头；成员缺失或写法不合为 `None`。
+/// 回执 JSON 中的链头；四个成员任一缺失或写法不合 REQ-AMB-STO-EVIDENCE-EXPORT-V2-RECEIPT 的形状时为 `None`
+/// （REQ-AMB-STO-EVIDENCE-VERIFY-V3-PKG-CONSISTENT ②）。缺失与 JSON `null` 不同：只有后三个成员可以为 `null`。
+/// `path` 要合各自的路径模板，并与 `snapshot_id`、段号所在模板、`metadata_version` 对得上。
 pub fn heads_of(receipt: &Value) -> Option<Heads> {
+    use crate::chain::SnapshotId;
+    use crate::cold::layout::metadata_path;
+    use crate::layout::{
+        parse_cold_change_segment_path, parse_retired_segment_path, snapshot_path,
+    };
+
     let digest = |v: &Value| v.as_str().and_then(Digest::parse);
-    let obj = |v: &Value| -> Option<Option<ObjectRef>> {
+    let member = |name: &str| receipt.as_object()?.get(name);
+    let obj = |v: &Value, valid: fn(&str) -> bool| -> Option<Option<ObjectRef>> {
         if v.is_null() {
             return Some(None);
         }
+        let path = v["path"].as_str().filter(|p| valid(p))?;
         Some(Some(ObjectRef {
-            path: v["path"].as_str()?.to_owned(),
+            path: path.to_owned(),
             content_digest: digest(&v["content_digest"])?,
         }))
     };
-    let s = &receipt["snapshot"];
-    let cold = &receipt["cold"];
+    let s = member("snapshot")?;
+    let snapshot_id = s["snapshot_id"].as_u64().filter(|&i| i >= 1)?;
+    let path = s["path"]
+        .as_str()
+        .filter(|p| *p == snapshot_path(SnapshotId(snapshot_id)))?;
+    let cold = member("cold")?;
     Some(Heads {
         snapshot: SnapshotHead {
-            snapshot_id: s["snapshot_id"].as_u64()?,
-            path: s["path"].as_str()?.to_owned(),
+            snapshot_id,
+            path: path.to_owned(),
             content_digest: digest(&s["content_digest"])?,
         },
-        retired_segment: obj(&receipt["retired_segment"])?,
-        cold_deletion_segment: obj(&receipt["cold_deletion_segment"])?,
+        retired_segment: obj(member("retired_segment")?, |p| {
+            parse_retired_segment_path(p).is_some()
+        })?,
+        cold_deletion_segment: obj(member("cold_deletion_segment")?, |p| {
+            parse_cold_change_segment_path(p).is_some()
+        })?,
         cold: if cold.is_null() {
             None
         } else {
+            let metadata_version = cold["metadata_version"].as_u64().filter(|&n| n >= 1)?;
+            let path = cold["path"]
+                .as_str()
+                .filter(|p| *p == metadata_path(metadata_version))?;
             Some(ColdHead {
-                metadata_version: cold["metadata_version"].as_u64()?,
-                path: cold["path"].as_str()?.to_owned(),
+                metadata_version,
+                path: path.to_owned(),
                 content_digest: digest(&cold["content_digest"])?,
             })
         },

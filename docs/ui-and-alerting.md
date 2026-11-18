@@ -16,10 +16,11 @@ Open `https://<Amberlog address>/ui` in a browser.
 
 - Opening the page needs no token, and the page itself contains no data. You need the token only to query: enter the value of `auth.token` in the 口令 (Token) box at the top right.
 - The token is kept only in the current browser tab. Closing the tab clears it. The token is not written to the address bar, to cookies or to persistent browser storage. When the token is wrong or missing, the message 口令无效或未填写 (invalid or missing token) appears next to the token box.
-- 时区 (Time zone) sets the time zone in which the UI shows times. The default is the browser's time zone. Times are written as `YYYY-MM-DD HH:MM:SS.ffffff`, to the microsecond. Hover the mouse over a time to see it in UTC.
+- 时区 (Time zone) sets the time zone in which the UI shows times. The default is the browser's time zone. Times are written as `YYYY-MM-DD HH:MM:SS.ffffff`, to the microsecond. Hover the mouse over a time to see it in UTC. To be easy to read, the time range summary and the histogram axis show times only to the second or minute; hover over the summary to see the start and end to the microsecond.
 - 外观 (Appearance) has three choices: follow the system, light and dark.
 - The browser keeps the time zone, the appearance and the query history, and uses them again the next time you open the UI.
 - The scripts, styles and fonts that the page needs are all inside the page. The page does not access any address other than Amberlog, so it also works on an internal network.
+- Each screen has its own address: `/ui/search`, `/ui/ledger` and `/ui/reconciliation` (`/ui` shows the Search screen). You can bookmark a screen, stay on it after a reload, and use the browser's Back and Forward buttons to move between screens.
 - Switching between the three screens sends no request. Each screen keeps the inputs and results it already has.
 
 ## 2. Search screen
@@ -29,7 +30,12 @@ Open `https://<Amberlog address>/ui` in a browser.
 ### 2.1 Select a dataset and a time range
 
 1. In the dataset box at the top left, select or type the name of a dataset, for example `app`. The suggestions come from the ledger.
-2. Select a time range. The quick choices are the last 15 minutes, 1 hour, 6 hours, 24 hours, 7 days and 30 days. The default is the last 1 hour. You can also type times directly into the start and end boxes, as `YYYY-MM-DD HH:MM`, `YYYY-MM-DD HH:MM:SS` or with fractional seconds. The UI reads them in the selected time zone.
+2. Click the time range summary to the left of 查询 (Query) to open the time range panel.
+   - The 相对时间 (Relative) tab has the quick choices: the last 15 minutes, 1 hour, 6 hours, 24 hours, 7 days and 30 days. The default is the last 1 hour. The range is taken at the moment you click 查询 (Query).
+   - The 绝对时间 (Absolute) tab has a start box and an end box. Type times directly, as `YYYY-MM-DD HH:MM`, `YYYY-MM-DD HH:MM:SS` or with fractional seconds; the UI reads them in the selected time zone. You can also type a time with `Z` or an offset such as `+08:00`, for example `2026-10-16T09:00:00Z`; the UI reads it with that offset. The calendar only fills in the date part of a box.
+   - The start must be earlier than the end. When a box is empty or not in a valid form, or the start is not earlier than the end, clicking 查询 (Query) shows 时刻格式无效 (invalid time format) in the result area and sends no query.
+   - Selecting a time range does not send a query. Press Esc, click outside the panel or click × to close it; your selection is kept.
+   - The summary shows times to the second. Hover over it to see the start and end to the microsecond. After you query with a relative range, the summary shows the start and end that this query actually used.
 3. Click 查询 (Query).
 
 Above the results, the UI shows the total count, the row range of this page, the time taken and the amount scanned. Each page has 100 rows. Use 上一页 (Previous) and 下一页 (Next) to move between pages.
@@ -46,7 +52,9 @@ In condition mode, type a condition into the condition box and press Enter. The 
 | `"level = error"` | Put in double quotes, the whole text is a full-text condition |
 
 - How values are compared: when the field has a text type, the `500` in `code = 500` is compared as text. When the field has a numeric type, it is compared as a number. When you put the value in double quotes, for example `code = "500"`, it is always compared as text. When the operator is `LIKE`, the value is always text.
-- While you type, the UI suggests field names and operators. When the field panel already shows the common values of a field (section 2.4), the UI also suggests these values. The last suggestion is 按全文检索 (search as full text).
+- While you type, the UI suggests field names and operators. When the field panel already shows the common values of a field (section 2.4), the UI also suggests these values. When the text you typed would be added as a full-text condition, the last suggestion is 添加全文条件：<text> (add a full-text condition).
+- Input that is not finished is not added when you press Enter; a message next to the condition box says what to complete. Examples: `status >=` (no value), `level IS` (unfinished operator), `"abc` (only an opening quote).
+- Text in the condition box that you have not added with Enter is added as a condition first when you click 查询 (Query) or switch to SQL. If it is not finished, the UI stops: it does not query or switch.
 - A condition that you added or deleted but have not queried yet shows as a dashed chip, and a dot appears next to 查询 (Query). The change takes effect only after you click 查询 (Query).
 
 ![Condition mode: level = error and full-text timeout, with the matched word highlighted](images/ui-search-conditions.png)
@@ -61,7 +69,7 @@ Full-text search has no index. It scans all the text in the time range:
 In condition mode, the bar chart above the results shows the number of records in each time interval. The bottom right corner shows how much time each bar represents.
 
 - Click one bar, or drag across several bars, to set the time range to that interval and query again.
-- 收起分布图 (Hide histogram) hides the chart. While it is hidden, the UI does not request histogram data.
+- 收起分布图 (Hide histogram) hides the chart. While it is hidden, the UI does not request histogram data. When you click 显示分布图 (Show histogram) again, the UI fetches the histogram for the most recent query.
 - When you write SQL by hand, the UI draws no histogram.
 
 ### 2.4 Result table and field panel

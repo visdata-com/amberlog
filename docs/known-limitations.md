@@ -64,9 +64,9 @@ The first three items are to be fixed in the next stage (section 7.1). The fourt
 
 ### 3.2 Release platforms
 
-- Release binaries exist only for Linux x86_64 and Linux aarch64. They require glibc 2.28 or later (for example RHEL 8 and its derivatives, Kylin V10, Debian 10 or later, Ubuntu 20.04 or later).
-- Container images exist for `linux/amd64` and `linux/arm64`.
-- There are no binaries for Windows or macOS.
+- Released versions run on Linux x86_64 and Linux aarch64 with glibc 2.28 or later (for example RHEL 8 and its derivatives, Kylin V10, Debian 10 or later, Ubuntu 20.04 or later). The binary in a release package uses the host's glibc, so this requirement applies to the host. The container image brings its own runtime libraries; it exists for `linux/amd64` and `linux/arm64`, and the host's glibc does not matter.
+- The two architectures are checked to different degrees. The x86_64 release package was run in AlmaLinux 8 (glibc 2.28) and Debian 13 containers. The aarch64 release package is cross-compiled on x86_64; for each build, only its ELF architecture and the glibc symbol versions it requires are checked, and it was run once on an ARM machine.
+- There are no binaries for Windows or macOS, and no binaries for systems that use musl instead of glibc (on such hosts, use the container image).
 
 ### 3.3 Supported object storage
 
@@ -74,6 +74,7 @@ The first three items are to be fixed in the next stage (section 7.1). The fourt
 - AWS S3 and Ceph RGW are supported through the S3-compatible API, but have not been tested yet. Try them once in your own environment before you use them.
 - The storage must support "create only if it does not exist", implemented with the request header `If-None-Match: *`. `serve` and `retire` probe this once at startup. If the storage does not support it, they do not start ("Conditional-write probe" in the [Configuration reference](configuration.md)).
 - Huawei Cloud OBS, Alibaba Cloud OSS and Tencent Cloud COS are not supported and have not been tested.
+- Local disk is for a trial or a single-node deployment; for a production deployment, we recommend `s3://`. The directory must be on a local file system or on a block-storage volume mounted on the node. A directory on a network file system (for example NFS) is outside what Amberlog guarantees (section 6.8 of the [Installation and deployment guide](install.md)).
 - With local disk storage, when the storage directory is moved away or its volume is unmounted while the process runs, `/readyz` does not report not-ready (section 8 of the [Operations guide](operations.md)). Protect the storage volume with a mount check.
 
 ### 3.4 Ingestion protocol

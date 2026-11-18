@@ -279,14 +279,12 @@ impl Store {
     }
 
     /// 就绪探测：对固定对象 `<root>/_system/readyz-probe` 写入并读回，每次覆盖同一对象
-    /// （REQ-AMB-OBS-HEALTH-METRICS）。
+    /// （REQ-AMB-OBS-HEALTH-METRICS）。写入经 [`Store::put`]：`file://` 所指目录在运行中不见了即不可访问，
+    /// 不由本地后端把它重新建出来（REQ-AMB-STO-HOT-LAYOUT-V8）。
     pub async fn probe_readyz(&self) -> Result<(), Unavailable> {
         let probe = self.system_path("readyz-probe");
         let body = format!("{}-{}", std::process::id(), unique_suffix());
-        self.inner
-            .put(&probe, PutPayload::from(body.clone()))
-            .await
-            .map_err(|e| unavailable("object store write probe failed", e))?;
+        self.put(&probe, bytes::Bytes::from(body.clone())).await?;
         let read = self
             .inner
             .get(&probe)

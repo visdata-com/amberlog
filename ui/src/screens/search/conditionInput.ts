@@ -1,6 +1,6 @@
-// 条件输入的阶段、候选与提交校验；不完整的字段表达式不能回退为全文条件。
+// 条件输入的提示（REQ-AMB-UI-SEARCH-V4-INPUT-HINTS）与草稿的判定（DRAFT）：不完整的输入不悄悄变成全文条件。
 import type { ValueRow } from "./FieldsBar.tsx";
-import { type Condition, type FieldOp, parseCondition, valueText } from "./sql.ts";
+import { type Condition, type FieldOp, parseCondition, splitField, valueText } from "./sql.ts";
 
 const OPS: readonly FieldOp[] = ["=", "!=", "<", "<=", ">", ">=", "LIKE", "IS NULL", "IS NOT NULL"];
 
@@ -27,50 +27,71 @@ function fieldEntry(input: string, columns: readonly string[]) {
 
 const quoted = (s: string): boolean => s.length >= 2 && s.startsWith('"') && s.endsWith('"') && !s.slice(1, -1).includes('"');
 
-/** 回车、查询和切换 SQL 共用的校验，避免各入口解释同一段输入的方式不同。 */
-export function conditionDraft(input: string, columns: readonly string[]): ConditionDraft {
-  const s = input.trim();
-  const fail = (error: string): ConditionDraft => ({ condition: null, error });
-  if (s === "" || quoted(s)) return { condition: parseCondition(s), error: null };
-  if (s.startsWith('"')) return fail("请补全全文内容的双引号");
-  const entry = fieldEntry(input, columns);
-  const condition = parseCondition(input);
-  if (entry !== null && entry.op === null && condition?.kind !== "field") return fail("请选择完整的运算符");
-  if (condition?.kind !== "field" && /\S\s+IS(?:\s+NOT)?(?:\s+N(?:U(?:L)?)?)?\s*$/i.test(s)) return fail("请选择完整的运算符");
-  if ((entry !== null && entry.op !== null && entry.value === "") ||
-      (condition?.kind !== "field" && /^.+?\s*(?:!=|<=|>=|=|<|>|\sLIKE)\s*$/i.test(s))) {
-    return fail("请填写字段值后再添加条件");
+/** DRAFT 四种不完整的输入的提示（REQ-AMB-UI-SEARCH-V4-DRAFT）。 */
+export const INCOMPLETE = {
+  quote: "请补全全文内容的双引号",
+  op: "请选择完整的运算符",
+  value: "请填写字段值后再添加条件",
+  valueQuote: "请补全字段值的双引号",
+} as const;
+
+/** ② 以空白加 `IS`、`IS N`……`IS NOT NUL` 结尾（各词之间一段空白），其前有非空白字符。 */
+const PARTIAL_IS = /\S\s+IS(?:\s+(?:N|NU|NUL|NOT(?:\s+(?:N|NU|NUL))?))?$/i;
+/** ③ 后半：以空白加 `LIKE` 结尾，其前有非空白字符。 */
+const TRAILING_LIKE = /\S\s+LIKE$/i;
+
+/**
+ * 草稿是不是不完整的输入（REQ-AMB-UI-SEARCH-V4-DRAFT），是时返回该种的提示。只看文字本身，不依赖字段表是否已取到。
+ */
+export function incompleteHint(input: string): string | null {
+  const t = input.trim();
+  if (t === "") return null;
+  if (t === '"' || (t.startsWith('"') && !t.endsWith('"'))) return INCOMPLETE.quote;
+  if (PARTIAL_IS.test(t)) return INCOMPLETE.op;
+  if (quoted(t)) return null;
+  const split = splitField(t);
+  if ((split !== null && split.field !== "" && split.value === "" && split.op !== "IS NULL" && split.op !== "IS NOT NULL") || TRAILING_LIKE.test(t)) {
+    return INCOMPLETE.value;
   }
-  if (condition?.kind === "field" && condition.value.startsWith('"') && (condition.value.length < 2 || !condition.value.endsWith('"'))) {
-    return fail("请补全字段值的双引号");
-  }
-  return { condition, error: null };
+  const c = parseCondition(t);
+  if (c?.kind === "field" && c.value.startsWith('"') && (c.value.length === 1 || !c.value.endsWith('"'))) return INCOMPLETE.valueQuote;
+  return null;
 }
 
-/** 空框无候选；字段表达式仅提示运算或取值，普通关键词才提供全文入口。 */
+/**
+ * 回车、点「查询」与切到 SQL 共用（DRAFT、FIELD-COND、TEXT-COND、QUERY、TO-SQL）：不完整的输入给出提示、不加入；
+ * 否则按 FIELD-COND 或 TEXT-COND 得到要加入的条件（没有草稿时为 null）。
+ */
+export function conditionDraft(input: string): ConditionDraft {
+  const error = incompleteHint(input);
+  return error !== null ? { condition: null, error } : { condition: parseCondition(input), error: null };
+}
+
+/**
+ * 输入提示（INPUT-HINTS）：空框不提示；字段名后提示运算、「字段名 运算」后提示已统计的取值；输入的文字会成为全文条件时
+ * （不成为字段条件、也不是不完整的输入），最后一项为全文项，否则不提供全文项。
+ */
 export function conditionHints(input: string, columns: readonly string[], valuesOf: (field: string) => readonly ValueRow[] | null): ConditionHint[] {
   const s = input.trim();
   if (s === "") return [];
+  const draft = conditionDraft(input);
+  const fulltext: ConditionHint[] = draft.condition?.kind === "text"
+    ? [{ kind: "text", text: "添加全文条件：" + draft.condition.text, condition: draft.condition }]
+    : [];
   const entry = quoted(s) || s.startsWith('"') ? null : fieldEntry(input, columns);
   if (entry !== null) {
     if (entry.op === null) {
-      return OPS.filter((op) => op.startsWith(entry.rest.toUpperCase())).map((op) => ({
+      return [...OPS.filter((op) => op.startsWith(entry.rest.toUpperCase())).map((op): ConditionHint => ({
         kind: "op", text: op, fill: entry.field + " " + op + (op.startsWith("IS") ? "" : " "),
-      }));
+      })), ...fulltext];
     }
     const prefix = (entry.value.startsWith('"') ? entry.value.slice(1).replace(/"$/, "") : entry.value).toLowerCase();
-    return (valuesOf(entry.field) ?? []).filter((row) => row.text.toLowerCase().includes(prefix)).map((row) => ({
+    return [...(valuesOf(entry.field) ?? []).filter((row) => row.text.toLowerCase().includes(prefix)).map((row): ConditionHint => ({
       kind: "value", text: row.text,
       condition: { kind: "field", field: entry.field, op: entry.op!, value: valueText(row) },
-    }));
+    })), ...fulltext];
   }
-  const draft = conditionDraft(input, columns);
-  // 完整字段表达式可直接回车添加，不再混入全文入口。
-  if (draft.condition?.kind === "field" || draft.error !== null) return [];
-  const out: ConditionHint[] = columns.filter((c) => !s.startsWith('"') && c.toLowerCase().includes(s.toLowerCase()))
+  const names: ConditionHint[] = columns.filter((c) => !s.startsWith('"') && c.toLowerCase().includes(s.toLowerCase()))
     .map((name) => ({ kind: "field", text: name, fill: name + " " }));
-  if (draft.condition?.kind === "text") {
-    out.push({ kind: "text", text: "添加全文条件：" + draft.condition.text, condition: draft.condition });
-  }
-  return out;
+  return [...names, ...fulltext];
 }

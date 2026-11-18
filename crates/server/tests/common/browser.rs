@@ -202,6 +202,11 @@ impl Browser {
             .unwrap()
             .to_owned();
         b.attach(&page);
+        // 测试台架的身份平台用现场签发的证书（`common::tls`），浏览器不认它的根证书：整个浏览器不核对证书
+        b.call_browser(
+            "Security.setIgnoreCertificateErrors",
+            json!({"ignore": true}),
+        );
         b
     }
 
@@ -555,6 +560,18 @@ impl Browser {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// 请求 `r` 的应答状态码（`Network.responseReceived`）；还没有应答或请求失败时为 None。
+    pub fn status(&mut self, r: &Request) -> Option<u16> {
+        self.call("Runtime.evaluate", json!({"expression": "0"}));
+        self.events
+            .iter()
+            .find(|e| {
+                e["method"] == "Network.responseReceived" && e["params"]["requestId"] == json!(r.id)
+            })
+            .and_then(|e| e["params"]["response"]["status"].as_u64())
+            .and_then(|s| u16::try_from(s).ok())
     }
 
     /// 除 `/ui` 之外的请求。

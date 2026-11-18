@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use amberlog_query::system::SystemTable;
+
 use crate::alerting::webhook::{self, Target};
 use crate::config::parse_duration;
 
@@ -47,6 +49,25 @@ impl Rule {
         match &self.source {
             Source::Sql(sql) => sql,
             Source::MissedCollection => MISSED_COLLECTION_SQL,
+        }
+    }
+
+    /// 评估所查的对象（REQ-AMB-ALR-EVALUATIONS-V2-ENTRY-VALUES）：取 `sql` 的 `FROM`，普通数据集为 `<org>/<stream>`（不论此刻
+    /// 是否存在），系统表为表名；内置规则为 `*`。
+    pub fn target(&self) -> String {
+        match &self.source {
+            Source::MissedCollection => "*".to_owned(),
+            Source::Sql(sql) => {
+                // 规则的 `sql` 已在启动时通过静态检查（SQL-STATIC），解析与 `FROM` 的名称都合规
+                let stream = amberlog_query::sql::parse(sql)
+                    .map(|q| q.stream)
+                    .unwrap_or_default();
+                if SystemTable::from_name(&stream).is_some() {
+                    stream
+                } else {
+                    format!("{}/{stream}", self.org)
+                }
+            }
         }
     }
 

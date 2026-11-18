@@ -1,7 +1,7 @@
 //! 跨层查询的冷侧（REQ-AMB-QRY-CROSS-TIER）在 query 这一层的测试：冷层读取用本文件的 [`SeqCold`]（可按次序给出不同的
 //! 冷层版本内容，并记下每次调用），热层沿用上层的替身。块场景由 `crates/server/tests/qry_cross_tier.rs` 的系统测试验证。
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use amberlog_storage::BoxFuture;
@@ -30,6 +30,8 @@ struct SeqCold {
     calls: Mutex<Vec<String>>,
     /// `read_file` 收到的 target。
     targets: Mutex<Vec<SchemaRef>>,
+    /// 没有要读的行组的文件（`read_file` 回 `None`）。
+    no_row_groups: Mutex<HashSet<String>>,
 }
 
 impl SeqCold {
@@ -46,6 +48,11 @@ impl SeqCold {
 
     fn put(&self, path: &str, r: Result<Vec<RecordBatch>, ColdReadError>) {
         self.files.lock().unwrap().insert(path.into(), r);
+    }
+
+    /// `path` 的行组都与查询范围不相交：`read_file` 回 `None`。
+    fn put_without_row_groups(&self, path: &str) {
+        self.no_row_groups.lock().unwrap().insert(path.into());
     }
 
     fn calls(&self) -> Vec<String> {
@@ -138,12 +145,15 @@ impl ColdReader for SeqCold {
         file: &'a ColdDataFile,
         target: SchemaRef,
         _time: std::ops::Range<i64>,
-    ) -> BoxFuture<'a, Result<ColdBatches, ColdReadError>> {
+    ) -> BoxFuture<'a, Result<Option<ColdBatches>, ColdReadError>> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("file {}", file.path));
         self.targets.lock().unwrap().push(target);
+        if self.no_row_groups.lock().unwrap().contains(&file.path) {
+            return Box::pin(std::future::ready(Ok(None)));
+        }
         let r = self
             .files
             .lock()
@@ -151,7 +161,7 @@ impl ColdReader for SeqCold {
             .get(&file.path)
             .cloned()
             .unwrap_or_else(|| Err(ColdReadError::NotFound(file.path.clone())))
-            .map(|batches| Box::new(batches.into_iter().map(Ok)) as ColdBatches);
+            .map(|batches| Some(Box::new(batches.into_iter().map(Ok)) as ColdBatches));
         Box::pin(std::future::ready(r))
     }
 }
@@ -266,6 +276,27 @@ fn a_values(v: &Value) -> Vec<i64> {
     let mut a: Vec<i64> = hits(v).iter().map(|h| h["a"].as_i64().unwrap()).collect();
     a.sort();
     a
+}
+
+/// SCAN-*：冷层数据文件的清单条目上下界与查询范围相交、但它没有要读的行组时，作答没有读它的任何行组，它不计入扫描
+/// 统计（REQ-AMB-QRY-SEARCH-ENDPOINT-V10 所称被扫描，冷层同此）。
+#[tokio::test]
+async fn cold_file_without_row_group_in_range_is_not_scanned() {
+    let mut fx = Fx::new();
+    fx.hot_b0(9, LAKE_H + 1, 3);
+    let path = "data/_timestamp_day=1970-01-01/c.parquet";
+    let cold = SeqCold::with_table(table(
+        vec![lake(7, B0, LAKE_H)],
+        vec![cold_file(path, 7, 30, 50, 3)],
+    ));
+    cold.put_without_row_groups(path);
+    fx.use_cold(cold.clone());
+    let r = fx.ok("SELECT a FROM app").await;
+    assert_eq!(a_values(&r), [1, 2]);
+    assert_eq!(cold.files_read(), [path], "打开过该文件");
+    assert_eq!(r["scan_files"], 1, "只计热层文件");
+    assert_eq!(r["scan_bytes"], 1002);
+    assert_eq!(r["scan_records"], 2);
 }
 
 /// UNION、COLD-PART、SCAN-*：交接已完成（热层只剩 `added_in` 大于 H 的迟到文件），两层一并作答、一并计数。

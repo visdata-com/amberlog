@@ -134,10 +134,31 @@ impl Fx {
     async fn run(&self, sql: &str, range: (i64, i64)) -> Result<Value, Reason> {
         let body = json!({"query": {"sql": sql, "start_time": range.0, "end_time": range.1}});
         self.engine()
-            .search("default", body.to_string().as_bytes())
+            .search(
+                "default",
+                body.to_string().as_bytes(),
+                &crate::viewer::System,
+            )
             .await
             .map(|r| r.to_json())
             .map_err(|e| e.reason)
+    }
+
+    /// 以主体 `viewer` 提交 `sql`（查询范围为全部）。
+    async fn run_as(&self, viewer: &dyn crate::viewer::Viewer, sql: &str) -> Result<Value, Reason> {
+        let body = json!({"query": {"sql": sql, "start_time": 0, "end_time": END}});
+        self.engine()
+            .search("default", body.to_string().as_bytes(), viewer)
+            .await
+            .map(|r| r.to_json())
+            .map_err(|e| e.reason)
+    }
+
+    async fn hits_as(&self, viewer: &dyn crate::viewer::Viewer, sql: &str) -> Vec<Value> {
+        match self.run_as(viewer, sql).await {
+            Ok(v) => v["hits"].as_array().unwrap().clone(),
+            Err(r) => panic!("{sql}: {r:?}"),
+        }
     }
 
     async fn hits(&self, sql: &str) -> Vec<Value> {
@@ -642,6 +663,7 @@ fn evaluation(rule: &str, scheduled_at: i64, outcome: &str) -> EvaluationRow {
         .into(),
         attempts: i64::from(matched),
         last_http_status: matched.then_some(200),
+        target: Some("default/app".into()),
     }
 }
 
@@ -773,5 +795,173 @@ async fn alert_evaluations_named_rule_and_errors() {
             .await
             .err(),
         Some(Reason::Internal)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 按主体过滤（REQ-AMB-QRY-SEARCH-ENDPOINT-V10、REQ-AMB-GOV-LEDGER-V4、REQ-AMB-GOV-RECONCILIATION-V4、
+// REQ-AMB-ALR-EVALUATIONS-V2-ROW-VISIBLE）
+// ---------------------------------------------------------------------------
+
+/// 台账只列可见的数据集，`count(*)` 只数这些行；不可见数据集的快照读不了也不影响作答（不为它读）。
+#[tokio::test]
+async fn ledger_rows_follow_viewer() {
+    use crate::testing::ScopedViewer;
+    let fx = Fx::new();
+    fx.committed("app_a", &[], (1, 2));
+    fx.committed("app_b", &[], (1, 2));
+    fx.committed("hr", &[], (1, 2));
+    fx.chain
+        .set_current(&ds("hr"), Err(ChainError::Unavailable("down".into())));
+    let q = ScopedViewer::querier(&["app_a", "app_b"]);
+    let names = |hits: Vec<Value>| -> Vec<String> {
+        hits.iter()
+            .map(|h| h["dataset"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        names(fx.hits_as(&q, "SELECT dataset FROM _ledger").await),
+        ["default/app_a", "default/app_b"]
+    );
+    assert_eq!(
+        fx.hits_as(&q, "SELECT count(*) AS n FROM _ledger").await,
+        [json!({"n": 2})]
+    );
+    // 点名不可见的数据集：结果为空，不报错
+    assert!(
+        fx.hits_as(&q, "SELECT * FROM _ledger WHERE dataset = 'default/hr'")
+            .await
+            .is_empty()
+    );
+    // 治理查看者的范围同样算可见
+    let g = ScopedViewer::governance(&["app_b"]);
+    assert_eq!(
+        names(fx.hits_as(&g, "SELECT dataset FROM _ledger").await),
+        ["default/app_b"]
+    );
+    // 范围为全部时读到 `hr` 的链尾即失败
+    assert_eq!(
+        fx.run("SELECT dataset FROM _ledger", (0, END)).await.err(),
+        Some(Reason::Unavailable)
+    );
+}
+
+/// 对账只为可见的数据集读计数对象：不可见数据集的计数对象读不出不影响作答。
+#[tokio::test]
+async fn reconciliation_rows_follow_viewer() {
+    use crate::testing::ScopedViewer;
+    let fx = Fx::new();
+    fx.committed("app", &[], (1, 2));
+    fx.committed("hr", &[], (1, 2));
+    fx.counters.put(
+        &ds("app"),
+        vec![window(0, 1, 1, &[]), window(MINUTE, 1, 1, &[])],
+    );
+    fx.counters
+        .fail(&ds("hr"), CounterError::Unparseable("bad".into()));
+    let q = ScopedViewer::querier(&["app"]);
+    let hits = fx.hits_as(&q, "SELECT dataset FROM _reconciliation").await;
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|h| h["dataset"] == "default/app"));
+    assert!(
+        fx.counters
+            .reads()
+            .iter()
+            .all(|(d, _, _)| d.stream == "app")
+    );
+    assert_eq!(
+        fx.run("SELECT dataset FROM _reconciliation", (0, END))
+            .await
+            .err(),
+        Some(Reason::Internal)
+    );
+}
+
+/// 评估记录按 `target` 过滤：数据集看范围，系统表名、`*` 与缺失只对范围为全部的主体可见；读取失败照常作答。
+#[tokio::test]
+async fn alert_evaluation_rows_follow_target() {
+    use crate::testing::ScopedViewer;
+    let fx = Fx::new();
+    for (rule, target) in [
+        ("a", Some("default/app")),
+        ("h", Some("default/hr")),
+        ("s", Some("_ledger")),
+        ("m", Some("*")),
+        ("old", None),
+    ] {
+        fx.alerts.put(
+            "default",
+            EvaluationRow {
+                target: target.map(str::to_owned),
+                ..evaluation(rule, MINUTE, "matched")
+            },
+        );
+    }
+    let q = ScopedViewer::querier(&["app"]);
+    assert_eq!(
+        fx.hits_as(&q, "SELECT rule, target FROM _alert_evaluations")
+            .await,
+        [json!({"rule": "a", "target": "default/app"})]
+    );
+    assert!(
+        fx.hits_as(&q, "SELECT * FROM _alert_evaluations WHERE rule = 'h'")
+            .await
+            .is_empty()
+    );
+    let all = ScopedViewer::all();
+    assert_eq!(
+        fx.hits_as(&all, "SELECT count(*) AS n FROM _alert_evaluations")
+            .await,
+        [json!({"n": 5})]
+    );
+    // 看不到的行所在的对象坏了照样报错
+    fx.alerts.fail(HistoryError::Unparseable("bad".into()));
+    assert_eq!(
+        fx.run_as(&q, "SELECT * FROM _alert_evaluations")
+            .await
+            .err(),
+        Some(Reason::Internal)
+    );
+}
+
+/// 请求体一步的位置：名称不合规先于它；只有治理查看者时普通数据集 403、系统表照常；范围外与不存在同一个错误。
+#[tokio::test]
+async fn body_step_in_report_order() {
+    use crate::testing::ScopedViewer;
+    let fx = Fx::new();
+    fx.committed("app", &[], (1, 2));
+    let g = ScopedViewer::governance(&["app"]);
+    assert_eq!(
+        fx.run_as(&g, "SELECT * FROM \"App\"").await.err(),
+        Some(Reason::StreamNotFound)
+    );
+    assert!(g.asked().is_empty());
+    assert_eq!(
+        fx.run_as(&g, "SELECT * FROM nope").await.err(),
+        Some(Reason::Forbidden)
+    );
+    assert!(fx.run_as(&g, "SELECT dataset FROM _ledger").await.is_ok());
+    assert_eq!(g.asked(), ["default/nope", "_ledger"]);
+    let q = ScopedViewer::querier(&["other"]);
+    let engine = fx.engine();
+    let body =
+        |sql: &str| json!({"query": {"sql": sql, "start_time": 0, "end_time": END}}).to_string();
+    let hidden = engine
+        .search("default", body("SELECT * FROM app").as_bytes(), &q)
+        .await
+        .unwrap_err();
+    let absent = engine
+        .search(
+            "default",
+            body("SELECT * FROM app").as_bytes(),
+            &crate::viewer::System,
+        )
+        .await;
+    // `app` 只有快照、不在内存表的目录里，对系统身份同样是不存在
+    let absent = absent.unwrap_err();
+    assert_eq!(hidden.reason, Reason::StreamNotFound);
+    assert_eq!(
+        (hidden.reason, hidden.message),
+        (absent.reason, absent.message)
     );
 }

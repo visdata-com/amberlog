@@ -51,7 +51,8 @@ pub(crate) async fn propagate(mut req: Request, next: Next) -> Response {
 }
 
 /// 一个 5xx 写一行 `error` 日志：请求编号、状态码、`reason`、响应的写定文字与底层错误的原文（URL 去除用户信息与
-/// 查询串）。`log.level` 的最低档就是 `error`，所以任何取值下都输出。字段名不作承诺。
+/// 查询串）。`log.level` 的最低档就是 `error`，所以任何取值下都输出。字段名中只有 `request_id` 是稳定的
+/// （REQ-AMB-ERR-ENVELOPE-V8、REQ-AMB-CFG-STARTUP-V10），其余不作承诺。
 fn log_server_error(res: &Response, id: &HeaderValue, method: &str, path: &str) {
     let mark = res.extensions().get::<Enveloped>();
     // `/readyz` 未就绪（`not_ready` 只用于它）与停机闸门的 503 不写

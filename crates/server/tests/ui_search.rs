@@ -1,10 +1,10 @@
-//! REQ-AMB-UI-SEARCH-V2 的系统测试：以子进程启动 `amberlog`（`auth.enabled` 为缺省的
+//! REQ-AMB-UI-SEARCH-V4 的系统测试：以子进程启动 `amberlog`（`auth.enabled` 为缺省的
 //! true），以无头浏览器（`common::browser`）打开 `/ui` 操作检索屏。对象存储用 `file://` 临时目录。
 //! 三屏共用的元素 id 见 `common::ui` 的文件头；检索屏另用：`#s-cond-input`（条件框的输入）、`#s-conds .chip`（胶囊，
-//! `data-staged` 为未生效）、`#s-hints li`（输入提示）、`#s-confirm-discard` 与 `#s-confirm-stay`（切回条件的确认）、
+//! `data-staged` 为未生效）、`#s-hints li`（输入提示，`li.text` 为全文项）、`#s-cond-error`（条件框旁的提示）、`#s-confirm-discard` 与 `#s-confirm-stay`（切回条件的确认）、
 //! `#s-staged`（「查询」旁的未生效标记）、`#s-limit`（全文范围超限的说明）、`#s-sql-note`（SQL 模式长范围全文的提示）、
 //! `#s-total`（总条数）、`#s-info`（本页行范围与扫描量）、`#s-hist-toggle`（分布图开关）、`#s-hist`（分布图区）、
-//! `#s-hist .hbar`（柱，`data-start` 为分桶起点）、`#s-per-bar`（「每柱 <间隔>」）、`#s-sort`（`_timestamp` 列头）、
+//! `#s-hist .hbar`（柱，`data-start` 为分桶起点）、`#s-hist-tooltip`（柱的提示浮层，起点在 `.hist-tooltip__start`）、`#s-per-bar`（「每柱 <间隔>」）、`#s-sort`（`_timestamp` 列头）、
 //! `th[data-col] .hide`（隐藏列）、`#s-prev`、`#s-next`、`#s-streams option`（数据集候选）。
 //! 分布请求、计数请求按请求体 `sql` 的开头区分（`common::ui::is_histogram`、`is_count`），由台架以 `Fetch.fulfillRequest`
 //! 改答（`answer_where`）。场景用到晚于接收时刻的记录时以 `ingest.max_future` 放宽摄取的时间窗。
@@ -422,15 +422,41 @@ fn ui_search_input_hints() {
     let mut b = open_in(&s, "UTC", |_| {});
     search_stream(&mut b, "app");
     b.fill("s-cond-input", "lev");
-    assert!(b.wait_until("document.querySelector('#s-hints') !== null", WAIT));
-    let v = b.eval("[...document.querySelectorAll('#s-hints li')].map(l => l.innerText)");
-    let hints: Vec<String> = serde_json::from_value(v).unwrap();
-    assert!(hints.contains(&"level".into()), "{hints:?}");
+    let h = hints(&mut b);
+    assert!(h.contains(&"level".into()), "{h:?}");
+    pick_last_fulltext(&mut b, "lev");
+}
+
+/// 输入提示的最后一项是全文项（`li.text`；它的文字按控件名由实现决定，不比对，REQ-AMB-UI-SEARCH-V4-INPUT-HINTS）：
+/// 选它后条件框中加入全文条件 `text`。
+fn pick_last_fulltext(b: &mut Browser, text: &str) {
     assert_eq!(
-        hints.last().map(String::as_str),
-        Some("添加全文条件：lev"),
-        "{hints:?}"
+        b.eval("(() => { const l = [...document.querySelectorAll('#s-hints li')].pop(); return l !== undefined && l.classList.contains('text'); })()"),
+        json!(true),
+        "最后一项不是全文项：{:?}",
+        hints(b)
     );
+    b.eval(
+        "[...document.querySelectorAll('#s-hints li')].pop().dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}))",
+    );
+    let want = format!("全文 {text}");
+    assert!(
+        b.wait_until(
+            &format!(
+                "[...document.querySelectorAll('#s-conds .chip .chip-text')].some(c => c.innerText === {})",
+                json!(want)
+            ),
+            WAIT
+        ),
+        "{:?}",
+        chips(b)
+    );
+    assert_eq!(chips(b), vec![(want, true)]);
+}
+
+/// 提示中有没有全文项。
+fn has_fulltext_hint(b: &mut Browser) -> bool {
+    b.eval("document.querySelector('#s-hints li.text') !== null") == json!(true)
 }
 
 #[test]
@@ -438,11 +464,14 @@ fn ui_search_input_empty_focus_and_commit_close_hints() {
     let (_fx, s) = start(&[]);
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
+    b.fill("s-stream", "app");
     b.click("s-cond-input");
-    assert!(!b.exists("#s-hints"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!b.exists("#s-hints"), "空的条件框显示了提示");
     add(&mut b, "timeout");
-    assert!(!b.exists("#s-hints"));
     assert_eq!(chips(&mut b), vec![("全文 timeout".into(), true)]);
+    assert_eq!(b.value("s-cond-input"), "");
+    assert!(!b.exists("#s-hints"), "回车后仍显示提示");
 }
 
 #[test]
@@ -452,6 +481,7 @@ fn ui_search_input_query_commits_draft_once() {
     let mut b = open_in(&s, "UTC", |_| {});
     choose(&mut b, "app");
     wait_field(&mut b, "level");
+    // 不回车，直接点「查询」：草稿先如同回车加入为条件，再发起检索（REQ-AMB-UI-SEARCH-V4-QUERY）
     b.fill("s-cond-input", "level = error");
     query(&mut b);
     let first = wait_requests(&mut b, 1, is_search).remove(0);
@@ -464,7 +494,7 @@ fn ui_search_input_query_commits_draft_once() {
     query(&mut b);
     let second = wait_requests(&mut b, 2, is_search).remove(1);
     assert_eq!(query_of(&first)["sql"], query_of(&second)["sql"]);
-    assert_eq!(chips(&mut b).len(), 1);
+    assert_eq!(chips(&mut b), vec![("level = error".into(), false)]);
 }
 
 #[test]
@@ -474,20 +504,62 @@ fn ui_search_input_incomplete_blocks_query_and_sql() {
     screen(&mut b, "search");
     b.fill("s-stream", "app");
     let before = requests_where(&mut b, is_search).len();
+    // 不回车，点「查询」：不发起检索，提示，焦点回到条件框（QUERY、DRAFT）
     b.fill("s-cond-input", "status >=");
-    b.press("s-cond-input", "Enter");
-    assert!(b.wait_until("document.querySelector('#s-cond-error') !== null", WAIT));
     b.click("s-query");
+    assert!(
+        b.wait_text("s-cond-error", "请填写字段值后再添加条件", WAIT),
+        "{}",
+        b.text("s-cond-error")
+    );
+    assert_eq!(
+        b.eval("document.activeElement && document.activeElement.id"),
+        json!("s-cond-input")
+    );
+    std::thread::sleep(Duration::from_millis(500));
     assert_eq!(requests_where(&mut b, is_search).len(), before);
-    assert!(chips(&mut b).is_empty());
+    // 切到 SQL：不切换（TO-SQL）
     b.click("s-mode-sql");
-    assert!(!b.exists("#s-sql"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!b.exists("#s-sql"), "不完整的输入时切到了 SQL 模式");
     assert_eq!(b.value("s-cond-input"), "status >=");
+    assert!(chips(&mut b).is_empty());
+    // 改成完整的输入再切：草稿先加入，再按全部条件写 SQL
     b.fill("s-cond-input", "status >= 500");
     assert_eq!(
         to_sql(&mut b),
         r#"SELECT * FROM "app" WHERE "status" >= 500"#
     );
+}
+
+#[test]
+fn ui_search_input_incomplete_enter_rejected() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    for (text, hint) in [
+        ("status >=", "请填写字段值后再添加条件"),
+        ("msg like", "请填写字段值后再添加条件"),
+        ("user is not", "请选择完整的运算符"),
+        ("\"abc", "请补全全文内容的双引号"),
+        ("name = \"abc", "请补全字段值的双引号"),
+    ] {
+        b.fill("s-cond-input", text);
+        b.press("s-cond-input", "Enter");
+        assert!(
+            b.wait_until("document.getElementById('s-cond-error') !== null", WAIT),
+            "{text} 回车后没有提示"
+        );
+        assert_eq!(b.text("s-cond-error"), hint, "{text}");
+        assert_eq!(b.value("s-cond-input"), text);
+        assert!(chips(&mut b).is_empty(), "{text}：{:?}", chips(&mut b));
+        b.fill("s-cond-input", "");
+        assert!(
+            b.wait_until("document.getElementById('s-cond-error') === null", WAIT),
+            "{text}：清空后提示仍在"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,10 +665,9 @@ fn ui_search_fulltext_narrow_24h() {
     let mut b = open_in(&s, "UTC", |_| {});
     fill_range(&mut b, "app", "2026-10-10 00:00", "2026-10-16 00:00");
     add(&mut b, "timeout");
-    assert!(
-        b.text("s-time-description")
-            .contains("2026-10-15 00:00:00 → 2026-10-16 00:00:00")
-    );
+    open_search_absolute(&mut b);
+    assert_eq!(b.value("s-time-end"), "2026-10-16 00:00:00.000000");
+    assert_eq!(b.value("s-time-start"), "2026-10-15 00:00:00.000000");
 }
 
 #[test]
@@ -736,26 +807,42 @@ fn ui_search_histogram_tooltip_timezone() {
     fill_range(&mut b, "app", "2026-10-30 16:00", "2026-10-30 17:00");
     query(&mut b);
     wait_bars(&mut b, 60);
-    for (_, label) in bars(&mut b) {
-        let want = if label.starts_with("2026-10-30 16:15:00") {
-            "3"
-        } else if label.starts_with("2026-10-30 16:40:00") {
-            "1"
-        } else {
-            "0"
+    // 每根柱的提示（聚焦或悬停时的浮层）写分桶起点按所选时区的完整时刻与 `n` 的原始文本（REQ-AMB-UI-SEARCH-V4-HIST-TOOLTIP）
+    for (start, _) in bars(&mut b) {
+        // Asia/Shanghai 为 UTC+8，没有夏令时
+        let at = utc_text(start.parse::<i64>().unwrap() + 8 * HOUR_US);
+        b.eval(&format!(
+            "document.querySelector('#s-hist .hbar[data-start=\"{start}\"]').focus()"
+        ));
+        assert!(
+            b.wait_until(
+                &format!(
+                    "(() => {{ const e = document.querySelector('#s-hist-tooltip .hist-tooltip__start'); \
+                     return e !== null && e.innerText === {}; }})()",
+                    json!(at)
+                ),
+                WAIT
+            ),
+            "{at} 的提示：{}",
+            b.eval("document.getElementById('s-hist-tooltip')?.innerText ?? null")
+        );
+        let n = b.eval(
+            "document.querySelector('#s-hist-tooltip .hist-tooltip__count strong').innerText",
+        );
+        let n = n
+            .as_str()
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let want = match at.as_str() {
+            "2026-10-30 16:15:00.000000" => "3",
+            "2026-10-30 16:40:00.000000" => "1",
+            _ => "0",
         };
-        assert!(label.contains(&format!("，{want} 条日志")), "{label}");
+        assert_eq!(n, want, "{at}");
     }
-    assert!(!b.exists("#s-hist .hbar[title]"), "柱体不再依赖原生 title");
-    b.eval(
-        "(() => { const e = document.querySelector('#s-hist .hbar[data-start=\"1793348100000000\"]'); \
-         const r = e.getBoundingClientRect(); e.dispatchEvent(new PointerEvent('pointerover', \
-         {bubbles:true,pointerType:'mouse',clientX:r.x+r.width/2,clientY:r.y+10})); })()"
-    );
-    assert!(b.wait_text("s-hist-tooltip", "2026-10-30 16:15:00", WAIT));
-    assert!(b.text("s-hist-tooltip").contains("2026-10-30 16:16:00"));
-    assert!(b.text("s-hist-tooltip").contains("3 条"));
-    assert!(b.text("s-hist-tooltip").contains("Asia/Shanghai"));
 }
 
 #[test]
@@ -776,31 +863,81 @@ fn ui_search_histogram_collapse() {
     ingest_now(&s, "app", json!({"a": 1}));
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "search");
-    assert!(!b.exists("#s-hist-toggle"), "尚未查询时不应显示分布图开关");
-    search_stream(&mut b, "app");
+    // 开关在第一次查询之前就可用
     assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
     b.click("s-hist-toggle");
     search_stream(&mut b, "app");
     wait_requests(&mut b, 1, is_count);
     b.reopen(&url(&s));
     fill_token(&mut b, TOKEN);
-    assert!(
-        !b.exists("#s-hist-toggle"),
-        "记住收起设置后，首次展示也不应显示开关"
-    );
+    assert!(b.wait_text("s-hist-toggle", "显示分布图", WAIT));
     search_stream(&mut b, "app");
-    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
     let counts = wait_requests(&mut b, 2, is_count);
     for c in &counts {
         assert_eq!(sql_of(c), "SELECT count(*) AS n FROM \"app\"");
     }
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(requests_where(&mut b, is_histogram).len(), 1);
+    assert_eq!(requests_where(&mut b, is_histogram).len(), 0);
     assert!(!b.exists("#s-hist"), "收起后分布图区仍占位");
-    b.click("s-hist-toggle");
-    let h = wait_requests(&mut b, 2, is_histogram).remove(1);
-    assert!(b.wait_finished(&h, WAIT));
+    assert_eq!(b.text("s-hist-toggle"), "显示分布图");
+}
+
+#[test]
+fn ui_search_histogram_expand_refetch() {
+    let (_fx, s) = start(&[FUTURE]);
+    // 条件引用的字段 `status` 要在数据里（不存在的列会让查询出错）
+    ingest_at(&s, "app", T0830 + 15 * MINUTE_US, json!({"status": 500}));
+    wait_visible(&s, "SELECT * FROM \"app\"", (T0830, T0830 + HOUR_US), 1);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
     assert!(b.wait_text("s-hist-toggle", "收起分布图", WAIT));
+    b.click("s-hist-toggle");
+    fill_range(&mut b, "app", "2026-10-30 08:00", "2026-10-30 09:00");
+    add(&mut b, "status >= 500");
+    query(&mut b);
+    let r = wait_requests(&mut b, 1, is_search).remove(0);
+    let c = wait_requests(&mut b, 1, is_count).remove(0);
+    assert!(b.wait_finished(&c, WAIT));
+    assert_eq!(requests_where(&mut b, is_histogram).len(), 0);
+    // 由收起改为显示：按这次检索补发一个分布请求（REQ-AMB-UI-SEARCH-V4-HIST-COLLAPSE）
+    b.click("s-hist-toggle");
+    let h = wait_requests(&mut b, 1, is_histogram).remove(0);
+    assert_eq!(
+        sql_of(&h),
+        "SELECT histogram(_timestamp, '1m') AS t, count(*) AS n FROM \"app\" WHERE \"status\" >= 500 GROUP BY histogram(_timestamp, '1m') ORDER BY t"
+    );
+    assert_eq!(range_of(&h), range_of(&r));
+    wait_bars(&mut b, 60);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(requests_where(&mut b, is_search).len(), 1);
+    assert_eq!(requests_where(&mut b, is_count).len(), 1);
+    assert_eq!(requests_where(&mut b, is_histogram).len(), 1);
+}
+
+#[test]
+fn ui_search_histogram_all_zero() {
+    let (_fx, s) = start(&[FUTURE]);
+    // 有记录，但都不在 2026-10-30 08:00～09:00（UTC）之内
+    ingest_at(&s, "app", T0830 + 2 * HOUR_US, json!({"k": "v"}));
+    wait_visible(&s, "SELECT * FROM \"app\"", (T0830, T0830 + 3 * HOUR_US), 1);
+    let mut b = open_in(&s, "UTC", |_| {});
+    fill_range(&mut b, "app", "2026-10-30 08:00", "2026-10-30 09:00");
+    query(&mut b);
+    // 全部分桶为零时照画零高的柱（REQ-AMB-UI-SEARCH-V4-HIST-DRAW），开关照常可用
+    wait_bars(&mut b, 60);
+    let heights = b.eval(
+        "[...document.querySelectorAll('#s-hist .hbar .fill')].map(e => e.getBoundingClientRect().height)",
+    );
+    let heights: Vec<f64> = serde_json::from_value(heights).unwrap();
+    assert_eq!(heights.len(), 60);
+    assert!(heights.iter().all(|h| *h == 0.0), "{heights:?}");
+    assert_eq!(b.text("s-per-bar"), "每柱 1m");
+    assert!(
+        b.wait_text("s-total", "共 0 条", WAIT),
+        "{}",
+        b.text("s-total")
+    );
+    assert!(!disabled(&mut b, "s-hist-toggle"));
 }
 
 #[test]
@@ -833,7 +970,8 @@ fn ui_search_histogram_sql_mode() {
     search_sql(&mut b, "SELECT host FROM \"app\"");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(data_requests(&mut b).len(), before + 1);
-    assert!(!b.exists("#s-hist-toggle"), "SQL 模式不应显示分布图开关");
+    assert_eq!(b.text("s-hist-toggle"), "手写 SQL 不画分布图");
+    assert!(disabled(&mut b, "s-hist-toggle"));
     assert_eq!(b.text("s-total"), "共 — 条");
 }
 
@@ -1069,6 +1207,27 @@ fn ui_search_sort_ascending() {
     assert_eq!(sql_of(&r), "SELECT * FROM \"app\" ORDER BY _timestamp ASC");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(requests_where(&mut b, is_ancillary).len(), before);
+}
+
+/// 选了快捷项时，排序重发的检索请求沿用上一次检索请求的时间范围，不按点列头的时刻重取（REQ-AMB-UI-SEARCH-V4-TABLE-SORT）。
+/// 等 65 秒，按发出时刻重取时两次的起止时刻至少差 1 分钟。
+#[test]
+fn ui_search_sort_keeps_range() {
+    let (_fx, s) = start(&[]);
+    ingest_now(&s, "app", json!({"a": 1}));
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    search_quick(&mut b, HOUR_US);
+    search_stream(&mut b, "app");
+    let first = wait_requests(&mut b, 1, is_search).remove(0);
+    std::thread::sleep(Duration::from_secs(65));
+    b.click("s-sort");
+    let second = wait_requests(&mut b, 2, is_search).remove(1);
+    assert_eq!(
+        sql_of(&second),
+        "SELECT * FROM \"app\" ORDER BY _timestamp ASC"
+    );
+    assert_eq!(range_of(&second), range_of(&first));
 }
 
 #[test]
@@ -1753,11 +1912,7 @@ fn ui_search_input_hints_field_table() {
     b.fill("s-cond-input", "lev");
     let h = hints(&mut b);
     assert!(h.contains(&"level".into()), "{h:?}");
-    assert_eq!(
-        h.last().map(String::as_str),
-        Some("添加全文条件：lev"),
-        "{h:?}"
-    );
+    pick_last_fulltext(&mut b, "lev");
 }
 
 #[test]
@@ -1770,7 +1925,8 @@ fn ui_search_input_hints_values() {
         h.contains(&"error".into()) && h.contains(&"warn".into()),
         "{h:?}"
     );
-    assert!(!h.iter().any(|text| text.contains("全文")), "{h:?}");
+    // `level = ` 是不完整的输入，不提供全文项（REQ-AMB-UI-SEARCH-V4-INPUT-HINTS）
+    assert!(!has_fulltext_hint(&mut b), "{h:?}");
 }
 
 #[test]

@@ -898,6 +898,57 @@ fn cold_table_summary_file_digests_compaction() {
     }
 }
 
+/// 场景「冷层合并之后的入湖不再沿用只含已删除条目的清单」（REQ-AMB-STO-COLD-TABLE-V3 第 45、46 条）。
+#[test]
+fn cold_table_no_carry_empty_manifest() {
+    let c = Ctl::new();
+    let s = compacted(&c);
+    let cold = c.cold();
+    let meta = cold.current();
+    let compaction: Vec<Value> = ColdDir::snapshots(&meta)
+        .into_iter()
+        .filter(|s| s["summary"]["amberlog.operation"] == "compaction")
+        .collect();
+    assert_eq!(compaction.len(), 1, "{compaction:?}");
+    let snap_c = &compaction[0];
+    let lists = manifest_list(&cold, &meta, snap_c);
+    let empty = |m: &iceberg::spec::ManifestFile| {
+        m.added_files_count == Some(0) && m.existing_files_count == Some(0)
+    };
+    assert!(
+        lists.entries().iter().any(empty),
+        "C 的清单列表里应有新增与沿用条目数都为 0 的清单：{:?}",
+        lists.entries()
+    );
+    // 合并前两个冷层数据文件：C 之前各入湖快照新增的文件
+    let inputs: BTreeSet<String> = ColdDir::snapshots(&meta)
+        .iter()
+        .filter(|s| s["summary"]["amberlog.operation"] == "lake")
+        .flat_map(|s| cold.added(&meta, s))
+        .map(|e| e.path)
+        .collect();
+    assert_eq!(inputs.len(), 2, "{inputs:?}");
+
+    let day = now_us().div_euclid(24 * HOUR) * 24 * HOUR - 2 * 24 * HOUR;
+    let label = bucket_label(day + 3 * HOUR);
+    ingest_records(&s, APP, day + 3 * HOUR, 20, 10, plain);
+    c.ds().wait_handovers(&label, 1, Duration::from_secs(180));
+    let meta = cold.current();
+    let lake = ColdDir::lake_snapshots(&meta, &label);
+    assert_eq!(lake.len(), 1, "{lake:?}");
+    let l = manifest_list(&cold, &meta, &lake[0]);
+    for m in l.entries() {
+        let n = m.added_files_count.unwrap_or(1) + m.existing_files_count.unwrap_or(1);
+        assert!(n > 0, "L 沿用了只含已删除条目的清单 {}", m.manifest_path);
+    }
+    let deleted: BTreeSet<String> = raw_entries(&cold, &meta, snap_c)
+        .into_iter()
+        .filter(|e| e.status == ManifestStatus::Deleted)
+        .map(|e| e.path)
+        .collect();
+    assert!(inputs.is_subset(&deleted), "{inputs:?} / {deleted:?}");
+}
+
 #[test]
 fn cold_table_summary_ttl_cutoff_ttl_only() {
     let c = Ctl::new();

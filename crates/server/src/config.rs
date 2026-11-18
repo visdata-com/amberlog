@@ -16,6 +16,7 @@ use amberlog_storage::store::{Location, S3Options, ServerSideEncryption};
 
 use crate::alerting::rule::{self, Rule};
 use crate::alerting::webhook::{self, Target};
+use crate::authz::{FileSource, LogAccess};
 use crate::form::Form;
 use crate::logging::{Format, Level};
 
@@ -57,6 +58,15 @@ const KEYS: &[(&str, Kind)] = &[
     ("wal.dir", Kind::Str),
     ("auth.enabled", Kind::Bool),
     ("auth.token", Kind::Str),
+    ("auth.authz_file", Kind::Str),
+    ("auth.oidc.issuer", Kind::Str),
+    ("auth.oidc.audience", Kind::Str),
+    ("auth.oidc.subject_claim", Kind::Str),
+    ("auth.oidc.groups_claim", Kind::Str),
+    ("auth.oidc.ca_file", Kind::Str),
+    ("auth.oidc.client_id", Kind::Str),
+    ("auth.oidc.client_secret", Kind::Str),
+    ("auth.oidc.scope", Kind::Str),
     ("ingest.max_body_bytes", Kind::Int),
     ("ingest.max_future", Kind::Str),
     ("ingest.max_past", Kind::Str),
@@ -71,6 +81,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("query.max_memory_bytes", Kind::Int),
     ("log.level", Kind::Str),
     ("log.format", Kind::Str),
+    ("log.access", Kind::Str),
     ("lifecycle.seal_grace", Kind::Str),
     ("lifecycle.lake_watermark", Kind::Str),
     ("lifecycle.lake_alert_after", Kind::Str),
@@ -149,10 +160,11 @@ fn err(subject: impl Into<String>, message: impl Into<String>) -> ConfigError {
     }
 }
 
-/// 认证开关与口令。
+/// 认证开关与口令。认证开启时 `auth.token` 与 `auth.authz_file` 至少配一个（REQ-AMB-CFG-STARTUP-V10），未配 `auth.token`
+/// 时 `token` 为 `None`。
 #[derive(Clone, PartialEq, Eq)]
 pub enum Auth {
-    Enabled { token: String },
+    Enabled { token: Option<String> },
     Disabled,
 }
 
@@ -160,9 +172,9 @@ pub enum Auth {
 impl fmt::Debug for Auth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Auth::Enabled { .. } => f
+            Auth::Enabled { token } => f
                 .debug_struct("Enabled")
-                .field("token", &format_args!("***"))
+                .field("token", &token.as_ref().map(|_| format_args!("***")))
                 .finish(),
             Auth::Disabled => f.write_str("Disabled"),
         }
@@ -192,8 +204,15 @@ pub struct Config {
     pub s3: S3Options,
     /// `wal.dir`；只在 [`Form::requires_wal_dir`] 的形态中必填，其余形态缺省为 `None`（配置了也不使用）。
     pub wal_dir: Option<PathBuf>,
-    /// 认证；`None` 只出现在不受理请求的形态（[`Form::requires_auth_token`] 为 false）中 `auth.enabled` 为 true 而未配口令时。
+    /// 认证；`None` 只出现在不受理请求的形态（[`Form::requires_auth_token`] 为 false）中 `auth.enabled` 为 true 而口令与授权文件
+    /// 都未配置时。
     pub auth: Option<Auth>,
+    /// `auth.authz_file`：授权文件（REQ-AMB-AUTH-AUTHZ）。受理请求的形态在配置一步读取并校验（`startup.rs`），离线子命令不读。
+    pub authz_file: Option<FileSource>,
+    /// `log.access`：为哪些端点类别输出访问事件 `access`（REQ-AMB-AUTH-AUTHZ-EVT-ACCESS-CLASSES）。
+    pub log_access: LogAccess,
+    /// `auth.oidc.*`：身份平台（REQ-AMB-AUTH-OIDC）；未配置 `auth.oidc.issuer` 时为 `None`。
+    pub oidc: Option<Oidc>,
     pub max_body_bytes: u64,
     pub max_future: Duration,
     pub max_past: Option<Duration>,
@@ -260,6 +279,37 @@ pub struct Alerts {
     pub ca_file: Option<CaFile>,
     /// `alerts.ca_file` 的内容：只在 `amberlog serve` 下由加密的校验读出（`startup/encryption.rs`）。
     pub ca_pem: Option<Vec<u8>>,
+}
+
+/// `auth.oidc.*`（REQ-AMB-CFG-STARTUP-V10）：身份平台的签发方、受众、两个声明名与追加信任的 CA 证书文件。
+/// CA 文件在这里不读：读取与可用性按 REQ-AMB-AUTH-OIDC，读不到只使取说明文档与公钥集失败，不使启动失败。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Oidc {
+    pub issuer: String,
+    pub audience: String,
+    pub subject_claim: String,
+    pub groups_claim: String,
+    pub ca_file: Option<CaFile>,
+    /// 界面登录：配置了 `auth.oidc.client_id` 与 `auth.oidc.client_secret` 时为 `Some`。
+    pub login: Option<OidcLogin>,
+}
+
+/// 界面登录的客户端编号、客户端密钥与 `scope`（REQ-AMB-CFG-STARTUP-V10）。密钥不进调试输出。
+#[derive(Clone, PartialEq, Eq)]
+pub struct OidcLogin {
+    pub client_id: String,
+    pub client_secret: String,
+    pub scope: String,
+}
+
+impl fmt::Debug for OidcLogin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcLogin")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &format_args!("***"))
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 /// 入站 TLS 的证书链与私钥文件：配置取值原文（`tls_reload_failed` 的字段）与按工作目录解析后的路径。
@@ -738,6 +788,9 @@ impl Resolver<'_> {
             Some(dir) => Some(Some(cwd.join(dir))),
         };
 
+        let authz_file = self
+            .path_opt("auth.authz_file", cwd)
+            .map(|(text, path)| FileSource { text, path });
         let auth = {
             let enabled = self.bool_or("auth.enabled", true);
             let token = self
@@ -750,18 +803,20 @@ impl Resolver<'_> {
                 self.fail("auth.token", "must match the RFC 6750 b64token syntax");
             }
             match (enabled, token) {
-                (true, Some(token)) => Some(Some(Auth::Enabled { token })),
-                (true, None) if self.form.requires_auth_token() => {
+                (true, None) if authz_file.is_none() && self.form.requires_auth_token() => {
                     self.fail(
                         "auth.token",
-                        "required configuration key is missing (auth.enabled is true)",
+                        "required configuration key is missing: configure auth.token or auth.authz_file (auth.enabled is true)",
                     );
                     None
                 }
-                (true, None) => Some(None),
+                (true, None) if authz_file.is_none() => Some(None),
+                (true, token) => Some(Some(Auth::Enabled { token })),
                 (false, _) => Some(Some(Auth::Disabled)),
             }
         };
+
+        let oidc = self.oidc(cwd, authz_file.is_some());
 
         let max_body_bytes = self.int_at_least("ingest.max_body_bytes", 33_554_432, 1);
         let max_future = self.duration_or("ingest.max_future", "24h");
@@ -797,6 +852,13 @@ impl Resolver<'_> {
                     "log.level",
                     "expected one of error, warn, info, debug, trace",
                 );
+                None
+            }
+        };
+        let log_access = match LogAccess::parse(self.str_or("log.access", "reads")) {
+            Some(a) => Some(a),
+            None => {
+                self.fail("log.access", "expected one of none, reads, all");
                 None
             }
         };
@@ -886,6 +948,9 @@ impl Resolver<'_> {
             s3: s3?,
             wal_dir: wal_dir?,
             auth: auth?,
+            authz_file,
+            log_access: log_access?,
+            oidc: oidc?,
             max_body_bytes: max_body_bytes?,
             max_future: max_future?,
             max_past: max_past?,
@@ -924,6 +989,118 @@ impl Resolver<'_> {
                 ca_pem: None,
             },
         })
+    }
+
+    /// `auth.oidc.*`（REQ-AMB-CFG-STARTUP-V10）：`issuer`、`audience`、`ca_file` 为空字符串视同缺失，两个声明名为空字符串按
+    /// 格式非法；`issuer` 只认 `https://` 的绝对 URL；配了 `issuer` 必须配 `audience`，受理请求的形态在认证开启时还必须配
+    /// `auth.authz_file`（身份平台令牌的主体只能经授权文件取得角色）。
+    fn oidc(&mut self, cwd: &Path, has_authz_file: bool) -> Option<Option<Oidc>> {
+        let issuer = self
+            .str_opt("auth.oidc.issuer")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let mut ok = true;
+        if let Some(i) = &issuer
+            && !valid_https_url(i)
+        {
+            self.fail(
+                "auth.oidc.issuer",
+                "must be an absolute URL starting with https://",
+            );
+            ok = false;
+        }
+        let audience = self
+            .str_opt("auth.oidc.audience")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let mut claim = |key: &str, default: &str| {
+            let v = self.str_or(key, default).to_owned();
+            if v.is_empty() {
+                self.fail(key, "must not be empty");
+                None
+            } else {
+                Some(v)
+            }
+        };
+        let subject_claim = claim("auth.oidc.subject_claim", "sub");
+        let groups_claim = claim("auth.oidc.groups_claim", "groups");
+        let ca_file = self
+            .path_opt("auth.oidc.ca_file", cwd)
+            .map(|(text, path)| CaFile { text, path });
+        let login = self.oidc_login(issuer.is_some());
+        let Some(issuer) = issuer else {
+            return Some(None);
+        };
+        if audience.is_none() {
+            self.fail(
+                "auth.oidc.audience",
+                "required configuration key is missing (auth.oidc.issuer is configured)",
+            );
+        }
+        if self.form.listens() && self.bool_or("auth.enabled", true) && !has_authz_file {
+            self.fail(
+                "auth.oidc.issuer",
+                "auth.authz_file is required when auth.oidc.issuer is configured (auth.enabled is true)",
+            );
+        }
+        ok.then_some(())?;
+        Some(Some(Oidc {
+            issuer,
+            audience: audience?,
+            subject_claim: subject_claim?,
+            groups_claim: groups_claim?,
+            ca_file,
+            login: login?,
+        }))
+    }
+
+    /// `auth.oidc.client_id`、`client_secret`（空字符串视同缺失）与 `scope`（缺省 `openid`，空字符串按格式
+    /// 非法）：两者须成对配置，配了任一个就必须配 `auth.oidc.issuer`（REQ-AMB-CFG-STARTUP-V10）。
+    fn oidc_login(&mut self, has_issuer: bool) -> Option<Option<OidcLogin>> {
+        let text =
+            |r: &Self, key: &str| r.str_opt(key).filter(|s| !s.is_empty()).map(str::to_owned);
+        let client_id = text(self, "auth.oidc.client_id");
+        let client_secret = text(self, "auth.oidc.client_secret");
+        let scope = self.str_or("auth.oidc.scope", "openid").to_owned();
+        let mut ok = true;
+        if scope.is_empty() {
+            self.fail("auth.oidc.scope", "must not be empty");
+            ok = false;
+        }
+        match (&client_id, &client_secret) {
+            (Some(_), None) => {
+                self.fail(
+                    "auth.oidc.client_secret",
+                    "required configuration key is missing (auth.oidc.client_id is configured)",
+                );
+                ok = false;
+            }
+            (None, Some(_)) => {
+                self.fail(
+                    "auth.oidc.client_id",
+                    "required configuration key is missing (auth.oidc.client_secret is configured)",
+                );
+                ok = false;
+            }
+            _ => {}
+        }
+        if (client_id.is_some() || client_secret.is_some()) && !has_issuer {
+            self.fail(
+                "auth.oidc.issuer",
+                "required configuration key is missing (auth.oidc.client_id or auth.oidc.client_secret is configured)",
+            );
+            ok = false;
+        }
+        ok.then_some(())?;
+        Some(
+            client_id
+                .zip(client_secret)
+                .map(|(client_id, client_secret)| OidcLogin {
+                    client_id,
+                    client_secret,
+                    scope,
+                }),
+        )
     }
 
     /// 路径类配置项：空字符串视同缺失，相对路径按工作目录解析（REQ-AMB-CFG-STARTUP-V7）。返回配置取值原文与解析后的路径。
@@ -1084,6 +1261,12 @@ impl Resolver<'_> {
 }
 
 /// `<整数><ms|s|m|h|d>`，整数只含十进制数字；换算为微秒不超过 2^63−1。
+/// 以 `https://` 开头、带主机的绝对 URL（`auth.oidc.issuer`，REQ-AMB-CFG-STARTUP-V10）。
+fn valid_https_url(text: &str) -> bool {
+    text.starts_with("https://")
+        && reqwest::Url::parse(text).is_ok_and(|u| u.host_str().is_some_and(|h| !h.is_empty()))
+}
+
 pub fn parse_duration(text: &str) -> Option<Duration> {
     let split = text.find(|c: char| !c.is_ascii_digit())?;
     let (digits, unit) = text.split_at(split);
@@ -1298,7 +1481,7 @@ mod tests {
         .unwrap();
         let out = format!("{c:?}");
         assert!(!out.contains("Very-Secret"), "{out}");
-        assert!(out.contains("token: ***"), "{out}");
+        assert!(out.contains("token: Some(***)"), "{out}");
         assert!(out.contains("secret_access_key: Some(***)"), "{out}");
         assert_eq!(format!("{:?}", Auth::Disabled), "Disabled");
     }
@@ -1351,9 +1534,10 @@ mod tests {
         assert_eq!(
             c.auth,
             Some(Auth::Enabled {
-                token: "secret".into()
+                token: Some("secret".into())
             })
         );
+        assert_eq!((c.authz_file, c.log_access), (None, LogAccess::Reads));
     }
 
     #[test]
@@ -1758,6 +1942,80 @@ mod tests {
         )
         .unwrap();
         assert_eq!((c.wal_dir, c.auth), (None, Some(Auth::Disabled)));
+    }
+
+    /// `auth.token` 与 `auth.authz_file` 至少配一个；`log.access` 只取三种值（REQ-AMB-CFG-STARTUP-V10）。
+    #[test]
+    fn authz_file_and_log_access() {
+        let only = |pairs: &[(&str, &str)], form| load(form, None, env(pairs), Path::new("/cwd"));
+        let base = [
+            ("AMBERLOG_OBJECT_STORE__URL", "file:///d"),
+            ("AMBERLOG_WAL__DIR", "w"),
+        ];
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut v = base.to_vec();
+            v.extend_from_slice(extra);
+            v
+        };
+        for form in [Form::Serve, Form::Catalog] {
+            let c = only(&with(&[("AMBERLOG_AUTH__AUTHZ_FILE", "authz.toml")]), form).unwrap();
+            assert_eq!(c.auth, Some(Auth::Enabled { token: None }), "{form:?}");
+            assert_eq!(
+                c.authz_file,
+                Some(FileSource {
+                    text: "authz.toml".into(),
+                    path: "/cwd/authz.toml".into()
+                })
+            );
+            // 空路径视同缺失；两者都没配时那一行同时含两个键名
+            for pairs in [with(&[]), with(&[("AMBERLOG_AUTH__AUTHZ_FILE", "")])] {
+                let errors = only(&pairs, form).unwrap_err();
+                assert_eq!(errors.len(), 1, "{errors:?}");
+                let line = errors[0].to_string();
+                assert!(
+                    line.contains("auth.token") && line.contains("auth.authz_file"),
+                    "{line}"
+                );
+            }
+        }
+        // 离线子命令不必填，取值照常校验
+        let c = only(
+            &with(&[("AMBERLOG_AUTH__AUTHZ_FILE", "a.toml")]),
+            Form::Retire,
+        )
+        .unwrap();
+        assert_eq!(c.auth, Some(Auth::Enabled { token: None }));
+        assert!(only(&with(&[("AMBERLOG_AUTH__AUTHZ_FILE", "1")]), Form::Evidence).is_ok());
+        let c = only(
+            &with(&[
+                ("AMBERLOG_AUTH__ENABLED", "false"),
+                ("AMBERLOG_AUTH__AUTHZ_FILE", "a.toml"),
+            ]),
+            Form::Serve,
+        )
+        .unwrap();
+        assert_eq!(c.auth, Some(Auth::Disabled));
+        assert!(c.authz_file.is_some());
+
+        for (text, want) in [
+            ("none", LogAccess::None),
+            ("reads", LogAccess::Reads),
+            ("all", LogAccess::All),
+        ] {
+            assert_eq!(
+                load_env(&[("AMBERLOG_LOG__ACCESS", text)])
+                    .unwrap()
+                    .log_access,
+                want
+            );
+        }
+        for bad in ["All", "READS", "", "writes"] {
+            assert_eq!(
+                subjects(load_env(&[("AMBERLOG_LOG__ACCESS", bad)])),
+                vec!["log.access"],
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

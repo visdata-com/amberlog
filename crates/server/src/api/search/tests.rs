@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::router;
-use crate::config::Auth;
+use crate::authz::Authz;
 use crate::gateway::{self, AppState};
 use crate::telemetry::{Health, Metrics};
 
@@ -55,9 +55,7 @@ fn fx_with_limit(max_body_bytes: u64) -> Fx {
     let state = AppState {
         health: Arc::new(Health::new(std::env::temp_dir(), "file:///unused".into())),
         metrics: Arc::new(Metrics::default()),
-        auth: Arc::new(Auth::Enabled {
-            token: TOKEN.into(),
-        }),
+        authz: Arc::new(Authz::with_token(TOKEN)),
     };
     let metrics = Arc::clone(&state.metrics);
     let app = gateway::app(

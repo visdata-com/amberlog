@@ -6,11 +6,13 @@
 
 pub mod alerting;
 pub mod api;
+pub mod authz;
 pub mod browser;
 pub mod evidence;
 pub mod gov;
 pub mod lake;
 pub mod missed;
+pub mod oidc;
 pub mod retire;
 pub mod s3;
 pub mod s3log;
@@ -562,10 +564,15 @@ impl Server {
 
     /// 等进程退出（至多 `limit`），返回退出码；被信号杀死时为 `Some(None)`，超时为 `None`。
     pub fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>> {
+        self.wait_status(limit).map(|s| s.code())
+    }
+
+    /// 等进程退出（至多 `limit`），返回退出状态；超时为 `None`。
+    pub fn wait_status(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + limit;
         loop {
             if let Some(status) = self.child.try_wait().expect("查询子进程状态") {
-                return Some(status.code());
+                return Some(status);
             }
             if Instant::now() >= deadline {
                 return None;
@@ -648,6 +655,24 @@ pub fn limit_file_size(cmd: &mut Command, bytes: u64) {
                 return Err(std::io::Error::last_os_error());
             }
             libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+}
+
+/// 让子进程对 SIGHUP 的处置为缺省且不屏蔽它：执行器从 `nohup` 一类的环境继承的「忽略」或屏蔽不带进被测进程。
+pub fn default_sighup(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: 闭包在 fork 之后、exec 之前运行，只调用异步信号安全的 signal、sigemptyset、sigaddset 与 sigprocmask。
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGHUP);
+            if libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }

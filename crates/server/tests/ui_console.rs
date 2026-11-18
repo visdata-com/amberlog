@@ -1,4 +1,4 @@
-//! REQ-AMB-UI-CONSOLE 的系统测试：以子进程启动 `amberlog`（`auth.enabled` 为缺省的
+//! REQ-AMB-UI-CONSOLE-V4 的系统测试：以子进程启动 `amberlog`（`auth.enabled` 为缺省的
 //! true），以无头浏览器（`common::browser`，chrome-headless-shell，经 `tools/chrome.sh` 取得）打开 `/ui` 操作。
 //! 对象存储用 `file://` 临时目录。三屏的元素 id 见 `common::ui` 的文件头；本文件另用顶栏的 `#tz-hint`（时区不认识的提示）、
 //! `#token-note`（口令框旁的说明）、`#token-hint`（口令无效的提示）。
@@ -9,24 +9,20 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::api::{HOUR_US, MINUTE_US, ingest_ok, now_us, poll, search_resp, sent, sent_element};
+use common::authz::{self, ServiceToken};
 use common::browser::Browser;
 use common::gov::{query_ok, write_counters};
 use common::missed::{GRACE_1M, Instance, minute_ago, ts_entry};
+use common::oidc;
 use common::ui::*;
 use common::{BEARER, Fixture, Server, TOKEN};
 use serde_json::{Value, json};
+use sha2::Digest;
 
 /// 2026-10-16T08:00:00Z。
 const T: i64 = 1_792_137_600_000_000;
 
 const CANCELLED: &str = "已取消。服务端可能仍在执行这次查询，马上重查可能提示服务繁忙";
-
-/// 仅允许当前 HTML 声明的嵌入资源，不能放行任意 /ui/assets/* 请求。
-fn page_assets(page: &str) -> Vec<&str> {
-    page.split('"')
-        .filter(|part| part.starts_with("/ui/assets/"))
-        .collect()
-}
 
 fn around_now() -> (i64, i64) {
     let now = now_us();
@@ -82,16 +78,11 @@ fn ui_console_page_requests() {
     let r = s.get("/ui");
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
-    // 请求记录记不到 Worker 发出的请求：页面与 JS 全文不得用到这些手段。
+    assert_page_headers(&r);
+    // 请求记录记不到 Worker 发出的请求：页面全文不得用到这几种发请求的手段
     let page = r.text();
-    let assets = page_assets(&page);
-    assert!(assets.iter().any(|path| path.ends_with(".js")));
-    assert!(assets.iter().any(|path| path.ends_with(".css")));
     for word in ["WebSocket", "Worker", "sendBeacon", "EventSource"] {
         assert!(!page.contains(word), "页面含 {word}");
-        for path in &assets {
-            assert!(!s.get(path).text().contains(word), "{path} 含 {word}");
-        }
     }
     let mut b = open(&s);
     std::thread::sleep(Duration::from_secs(5));
@@ -99,44 +90,70 @@ fn ui_console_page_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
+            !(r.method == "GET" && r.path() == "/ui")
                 && !(r.method == "POST" && r.path() == "/api/default/_search")
+                && !is_oidc_config(r)
         })
         .map(|r| format!("{} {}", r.method, r.url))
         .collect();
     assert_eq!(others, Vec::<String>::new());
+    // 另有恰一次 `GET /ui/oidc/config`（REQ-AMB-UI-CONSOLE-V4-LOGIN-CONFIG-REQUEST）
+    assert_eq!(oidc_config_requests(&mut b).len(), 1);
 }
 
-/// 查询串不影响入口；`/ui` 下的页面路径交给前端，文件和源码路径仍按
-/// REQ-AMB-ERR-ENVELOPE 返回 404。
+/// 页面路径的响应头（REQ-AMB-UI-CONSOLE-V4-PAGE）。
+fn assert_page_headers(r: &common::Resp) {
+    assert_eq!(r.header("x-frame-options"), Some("DENY"));
+    assert_eq!(r.header("referrer-policy"), Some("no-referrer"));
+    let csp = r.header("content-security-policy").unwrap_or_default();
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+}
+
+/// 界面取登录配置的请求 `GET /ui/oidc/config`。
+fn is_oidc_config(r: &common::browser::Request) -> bool {
+    r.method == "GET" && r.path() == "/ui/oidc/config"
+}
+
+/// 到此刻为止页面发出的 `GET /ui/oidc/config`。
+fn oidc_config_requests(b: &mut Browser) -> Vec<common::browser::Request> {
+    b.requests().into_iter().filter(is_oidc_config).collect()
+}
+
+/// 四个页面路径（查询串不影响结果）返回同一页面；`/ui/` 与其他 `/ui` 之下的路径按 REQ-AMB-ERR-ENVELOPE 为未注册路径
+/// （REQ-AMB-UI-CONSOLE-V4-PAGE；没配界面登录时登录路径也是，REQ-AMB-AUTH-OIDC-UI-OFF-404）。
 #[test]
 fn ui_console_page_path_exact() {
     let (_fx, s) = start(&[]);
     let page = s.get("/ui").text();
-    let q = s.get("/ui?x=1#y");
-    assert_eq!(q.status, 200);
-    assert_eq!(q.text(), page);
     for path in [
-        "/ui/",
+        "/ui",
+        "/ui?x=1",
         "/ui/search",
         "/ui/ledger",
-        "/ui/reconciliation",
-        "/ui/settings",
-        "/ui/settings/profile?tab=appearance",
+        "/ui/reconciliation?tab=1",
     ] {
         let r = s.get(path);
         assert_eq!(r.status, 200, "{path}");
+        assert_eq!(
+            r.header("content-type"),
+            Some("text/html; charset=utf-8"),
+            "{path}"
+        );
+        assert_page_headers(&r);
         assert_eq!(r.text(), page, "{path}");
     }
-    for p in [
+    for path in [
+        "/ui/",
+        "/ui/settings",
+        "/ui/search/x",
         "/ui/index.html",
         "/ui/assets/app.js",
-        "/ui/assets/missing",
-        "/ui/src/main.tsx",
-        "/ui/.vite/manifest.json",
-        "/uix/settings",
+        "/ui/callback",
     ] {
-        assert_eq!(s.get(p).status, 404, "{p}");
+        let r = s.get(path);
+        assert_eq!(r.status, 404, "{path}");
+        assert_eq!(r.json()["reason"], "not_found", "{path}");
     }
 }
 
@@ -145,17 +162,18 @@ fn ui_console_routes_open_and_reload() {
     let (_fx, s) = start(&[]);
     let mut b = Browser::launch();
     for (path, screen) in [
-        ("/ui/", "search"),
-        ("/ui/search", "search"),
         ("/ui/ledger", "ledger"),
         ("/ui/reconciliation", "recon"),
+        ("/ui/search", "search"),
+        ("/ui", "search"),
     ] {
         b.open(&format!("http://{}{path}", s.addr));
         let visible = format!(
             "document.getElementById('{screen}') !== null && !document.getElementById('{screen}').hidden"
         );
-        assert!(b.wait_until(&visible, WAIT), "直接访问 {path}");
-        assert_eq!(shown_screen(&mut b), screen);
+        assert!(b.wait_until(&visible, WAIT), "直接打开 {path}");
+        assert_eq!(shown_screen(&mut b), screen, "直接打开 {path}");
+        assert_eq!(b.eval("location.pathname"), json!(path), "直接打开 {path}");
         b.eval("window.__beforeReload = true");
         b.call("Page.reload", json!({"ignoreCache": true}));
         assert!(
@@ -167,15 +185,30 @@ fn ui_console_routes_open_and_reload() {
             ),
             "刷新 {path}"
         );
-        assert_eq!(shown_screen(&mut b), screen);
+        assert_eq!(shown_screen(&mut b), screen, "刷新 {path}");
+        assert_eq!(b.eval("location.pathname"), json!(path), "刷新 {path}");
     }
+}
+
+/// 检索屏的条件、时间范围与结果（比对切换前后）。
+fn search_snapshot(b: &mut Browser) -> Value {
+    b.eval(
+        "[document.getElementById('s-stream').value, document.getElementById('s-conds').innerText, \
+          document.getElementById('s-time-summary').textContent, document.getElementById('s-time-summary').title, \
+          document.getElementById('s-result').innerHTML]",
+    )
 }
 
 #[test]
 fn ui_console_route_navigation_updates_history_without_queries() {
     let (_fx, s) = start(&[]);
-    let mut b = open(&s);
-    let requests = data_requests(&mut b).len();
+    ingest_ok(&s, "app", r#"[{"msg":"hello"}]"#);
+    let mut b = open_with_token(&s);
+    wait_candidates(&mut b);
+    search_stream(&mut b, "app");
+    let before = search_snapshot(&mut b);
+    let n = b.requests().len();
+    b.eval("window.__noReload = true");
     screen(&mut b, "ledger");
     assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
     screen(&mut b, "recon");
@@ -186,41 +219,18 @@ fn ui_console_route_navigation_updates_history_without_queries() {
     b.eval("history.back()");
     assert!(b.wait_until("location.pathname === '/ui'", WAIT));
     assert_eq!(shown_screen(&mut b), "search");
-    assert_eq!(data_requests(&mut b).len(), requests, "切页触发了查询");
-}
-
-#[test]
-fn ui_console_unknown_page_is_handled_by_frontend() {
-    let (_fx, s) = start(&[]);
-    let mut b = Browser::launch();
-    for path in ["/ui/settings", "/ui/settings/profile?tab=appearance"] {
-        let r = s.get(path);
-        assert_eq!(r.status, 200, "{path} 未返回应用入口");
-        b.open(&format!("http://{}{path}", s.addr));
-        let not_found = "document.querySelector('[data-page=\"not-found\"]') !== null && document.getElementById('not-found-title')?.textContent === '页面不存在'";
-        assert!(b.wait_until(not_found, WAIT), "{path} 未由前端处理");
-        b.eval("window.__beforeReload = true");
-        b.call("Page.reload", json!({"ignoreCache": true}));
-        assert!(
-            b.wait_until(
-                &format!(
-                    "document.readyState === 'complete' && window.__beforeReload !== true && ({not_found})"
-                ),
-                WAIT
-            ),
-            "刷新 {path} 后未由前端处理"
-        );
-        b.click("not-found-home");
-        assert!(b.wait_until("location.pathname === '/ui/'", WAIT));
-        assert_eq!(shown_screen(&mut b), "search");
-    }
+    assert_eq!(search_snapshot(&mut b), before);
+    b.eval("history.forward()");
+    assert!(b.wait_until("location.pathname === '/ui/ledger'", WAIT));
+    assert_eq!(shown_screen(&mut b), "ledger");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(b.requests().len(), n, "切屏或前进后退发出了请求");
+    assert_eq!(b.eval("window.__noReload"), json!(true), "页面重新加载了");
 }
 
 #[test]
 fn ui_console_no_external_requests() {
     let (_fx, s) = start(&[]);
-    let page = s.get("/ui").text();
-    let assets = page_assets(&page);
     ingest_ok(&s, "app", r#"[{"msg":"hello"},{"msg":"world"}]"#);
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
@@ -241,13 +251,16 @@ fn ui_console_no_external_requests() {
         .requests()
         .iter()
         .filter(|r| {
-            !(r.method == "GET" && (r.path() == "/ui" || assets.contains(&r.path())))
+            !(r.method == "GET" && r.path() == "/ui")
                 && !(r.method == "POST" && r.path() == "/api/default/_search")
                 && !(r.method == "GET" && r.path() == "/api/default/app/_fields")
+                && !is_oidc_config(r)
         })
         .map(|r| format!("{} {}", r.method, r.url))
         .collect();
     assert_eq!(others, Vec::<String>::new());
+    // 另有恰一次 `GET /ui/oidc/config`
+    assert_eq!(oidc_config_requests(&mut b).len(), 1);
 }
 
 #[test]
@@ -268,21 +281,19 @@ fn ui_console_switch_keeps_state() {
     let mut b = open_with_token(&s);
     wait_candidates(&mut b);
     search_stream(&mut b, "app");
-    let snapshot = |b: &mut Browser| {
-        b.eval(
-            "[document.getElementById('s-stream').value, document.getElementById('s-time-trigger').textContent, \
-              document.getElementById('s-time-description').textContent, document.getElementById('s-result').innerHTML]",
-        )
-    };
-    let before = snapshot(&mut b);
+    let before = search_snapshot(&mut b);
     let n = data_requests(&mut b).len();
+    b.eval("window.__noReload = true");
     screen(&mut b, "ledger");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(data_requests(&mut b).len(), n, "切到台账屏发了请求");
+    assert_eq!(b.eval("location.pathname"), json!("/ui/ledger"));
     screen(&mut b, "search");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(data_requests(&mut b).len(), n, "切回检索屏发了请求");
-    assert_eq!(snapshot(&mut b), before);
+    assert_eq!(b.eval("location.pathname"), json!("/ui/search"));
+    assert_eq!(search_snapshot(&mut b), before);
+    assert_eq!(b.eval("window.__noReload"), json!(true), "页面重新加载了");
 }
 
 #[test]
@@ -378,6 +389,46 @@ fn ui_console_token_401_marked() {
     // 口令被修改（失去焦点时内容不同）后提示消失
     fill_token(&mut b, TOKEN);
     assert!(!b.exists("#token-hint"));
+}
+
+/// 口令框旁的提示（`#token-hint`，任一时刻至多一种）；没有时为 None。页面的脚本内联在 body 里，不能按全文找提示文字。
+fn token_hint(b: &mut Browser) -> Option<String> {
+    b.exists("#token-hint").then(|| b.text("token-hint"))
+}
+
+#[test]
+fn ui_console_token_403_hint() {
+    let fx = Fixture::new();
+    let g = ServiceToken::generate();
+    let entries = [authz::token_entry(
+        "g",
+        &g,
+        r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+    )];
+    let s = authz::start(&fx, &entries, &[]);
+    ingest_ok(&s, "app", r#"[{"msg":"hello"}]"#);
+    let mut b = open(&s);
+    fill_token(&mut b, &g.token);
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    b.click("s-query");
+    assert!(
+        b.wait_text("s-result", "请求失败", WAIT),
+        "{}",
+        b.text("s-result")
+    );
+    let text = b.text("s-result");
+    assert!(text.contains("403") && text.contains("forbidden"), "{text}");
+    assert_eq!(b.text("token-hint"), "当前身份没有这项操作的权限");
+    assert_ne!(
+        b.eval("document.getElementById('token').getAttribute('aria-invalid')"),
+        json!("true"),
+        "口令框被标出"
+    );
+    assert!(b.value("token") == g.token, "口令框的内容不再是令牌 G");
+    // 口令被修改（失去焦点时内容不同）后提示消失
+    fill_token(&mut b, TOKEN);
+    assert_eq!(token_hint(&mut b), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +568,8 @@ fn ui_console_time_input_zone() {
     let (_fx, s) = start(&[]);
     let mut b = open_with(&s, |b| b.set_timezone("Asia/Shanghai"));
     fill_token(&mut b, TOKEN);
-    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16 17:00");
+    // 止点在检索屏弹层「绝对时间」的止点框里直接填带 `Z` 的 RFC 3339 时刻（REQ-AMB-UI-CONSOLE-V4-TIME-INPUT）
+    fill_search(&mut b, "app", "2026-10-16 16:00", "2026-10-16T09:00:00Z");
     b.click("s-query");
     let r = wait_requests(&mut b, 1, is_search).remove(0);
     assert_eq!(range_of(&r), (1_792_137_600_000_000, 1_792_141_200_000_000));
@@ -538,11 +590,14 @@ fn ui_console_time_input_dst() {
 fn ui_console_time_input_invalid() {
     let (_fx, s) = start(&[]);
     let mut b = open(&s);
-    // 每次在新开的标签页里填写，结果区原本为空，「时刻格式无效」是这一次显示的
+    // 每次在新开的标签页里填写，结果区原本没有「时刻格式无效」，它是这一次显示的
     for (i, (start, end)) in [
-        ("2026-10-16 25:00", "2026-10-16 09:00"),
-        ("2026-10-16 08:00", "2026-10-16 "),
-        ("2026-10-16 10:00", "2026-10-16 09:00"),
+        ("2026/10/16 8点", ""),
+        ("2026-10-16 08:00", ""),
+        ("2026-02-30 10:00", "2026-03-01 10:00"),
+        // 起点晚于止点、起止相等（REQ-AMB-UI-CONSOLE-V4-TIME-INPUT-INVALID）
+        ("2026-10-16 09:00", "2026-10-16 08:00"),
+        ("2026-10-16 08:00", "2026-10-16 08:00"),
     ]
     .into_iter()
     .enumerate()
@@ -552,7 +607,7 @@ fn ui_console_time_input_invalid() {
         }
         screen(&mut b, "search");
         b.fill("s-stream", "app");
-        assert!(b.exists("#s-result .result-state[data-kind=idle]"));
+        assert!(!b.text("s-result").contains("时刻格式无效"));
         search_range(&mut b, start, end);
         b.click("s-query");
         assert!(
@@ -582,7 +637,24 @@ fn ui_console_quick_range() {
     // 浏览器取的时刻精确到毫秒
     assert!(end >= t0 - 1000 && end <= t1, "{t0} ≤ {end} ≤ {t1}");
     assert_eq!(end - start, 900_000_000);
-    assert!(b.text("s-time-trigger").contains("15 分钟"));
+    // 检索屏时间范围的摘要显示这两个时刻（时刻摘要可到秒），悬停可见完整写法（REQ-AMB-UI-CONSOLE-V4-QUICK-RANGE、TIME-SUMMARY）
+    let (a, z) = (utc_text(start), utc_text(end));
+    assert!(
+        b.wait_until(
+            &format!(
+                "document.getElementById('s-time-summary').title === {}",
+                json!(format!("{a} → {z}"))
+            ),
+            WAIT
+        ),
+        "悬停文字：{}",
+        b.eval("document.getElementById('s-time-summary').title")
+    );
+    let text = b.text("s-time-summary");
+    assert!(
+        text.contains(&a[..19]) && text.contains(&z[11..19]),
+        "{text}"
+    );
 }
 
 #[test]
@@ -594,15 +666,38 @@ fn ui_console_time_range_kept_on_tz_change() {
     b.click("s-query");
     wait_requests(&mut b, 1, is_search);
     b.select("tz", "UTC");
-    assert!(
-        b.text("s-time-description")
-            .contains("2026-10-16 08:00:00 → 2026-10-16 09:00:00")
-    );
+    // 检索屏的起止框在时间范围弹层「绝对时间」页签里
+    open_search_absolute(&mut b);
+    assert_eq!(b.value("s-time-start"), "2026-10-16 08:00:00.000000");
+    assert_eq!(b.value("s-time-end"), "2026-10-16 09:00:00.000000");
+    close_search_range(&mut b);
     b.click("s-query");
     let rs = wait_requests(&mut b, 2, is_search);
     for r in &rs {
         assert_eq!(range_of(r), (1_792_137_600_000_000, 1_792_141_200_000_000));
     }
+}
+
+#[test]
+fn ui_console_time_summary_hover() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_with(&s, |b| b.set_timezone("UTC"));
+    fill_token(&mut b, TOKEN);
+    fill_search(&mut b, "app", "2026-10-16 08:00", "2026-10-16 09:00");
+    b.click("s-query");
+    wait_requests(&mut b, 1, is_search);
+    let (a, z) = ("2026-10-16 08:00:00.000000", "2026-10-16 09:00:00.000000");
+    // 摘要所示的起止是完整写法中连续的一段，悬停可见完整写法
+    let text = b.text("s-time-summary");
+    let (x, y) = text
+        .split_once(" → ")
+        .unwrap_or_else(|| panic!("摘要：{text}"));
+    assert!(!x.is_empty() && a.contains(x.trim()), "{text}");
+    assert!(!y.is_empty() && z.contains(y.trim()), "{text}");
+    assert_eq!(
+        b.eval("document.getElementById('s-time-summary').title"),
+        json!(format!("{a} → {z}"))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -663,11 +758,12 @@ fn ui_console_value_raw() {
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
     let t = b.table("s-result");
+    let h = header(&mut b, "s");
     let cell = |name: &str| {
-        let i = t[0]
+        let i = h
             .iter()
-            .position(|h| h == name)
-            .unwrap_or_else(|| panic!("没有 {name} 列：{t:?}"));
+            .position(|x| x == name)
+            .unwrap_or_else(|| panic!("没有 {name} 列：{h:?}"));
         t[1][i].clone()
     };
     assert_eq!(cell("big"), "12345678901234567");
@@ -682,9 +778,42 @@ fn ui_console_empty_result() {
     ingest_at(&s, "app", now_us() - 3 * HOUR_US, json!({"msg": "old"}));
     let mut b = open_with_token(&s);
     search_stream(&mut b, "app");
-    assert!(b.text("s-result").contains("未找到匹配结果"));
-    assert!(b.text("s-result").contains("扩大时间范围"));
+    // 「无结果」之下可另有说明文字（REQ-AMB-UI-CONSOLE-V4-EMPTY、FREEDOM）
+    assert!(
+        b.text("s-result").contains("无结果"),
+        "{}",
+        b.text("s-result")
+    );
     assert!(!b.exists("#s-result table"));
+}
+
+/// `amberlog --version` 输出中的版本号（`amberlog <semver> (<commit>)` 的第二段）。
+fn semver() -> String {
+    let dir = common::TempDir::new();
+    let out = common::amberlog(dir.path())
+        .arg("--version")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    text.split_whitespace().nth(1).unwrap().to_owned()
+}
+
+#[test]
+fn ui_console_page_no_disclosure() {
+    let fx = Fixture::new();
+    let s = fx.start(&[("storage.prefix", Some("\"zqprefix7731\""))]);
+    ingest_ok(&s, "zqds7731", r#"[{"msg":"hello"}]"#);
+    let version = semver();
+    assert!(!version.is_empty());
+    let dir = fx.root().display().to_string();
+    for path in ["/ui", "/ui/search", "/ui/ledger", "/ui/reconciliation"] {
+        let r = s.get(path);
+        assert_eq!(r.status, 200, "{path}");
+        let page = r.text();
+        for word in [version.as_str(), "zqds7731", "zqprefix7731", dir.as_str()] {
+            assert!(!page.contains(word), "{path} 含 {word}");
+        }
+    }
 }
 
 #[test]
@@ -886,9 +1015,12 @@ fn ui_console_memory_exceeded() {
     );
     let mut b = open_with_token(&s);
     search_sql(&mut b, sql);
+    // 出错文字之后另有一行请求编号（REQ-AMB-UI-CONSOLE-V4-ERR-REQUEST-ID）
+    let text = b.text("s-result");
     assert_eq!(
-        b.text("s-result").trim(),
-        "这次查询需要的内存超过上限。请缩小时间范围，或去掉全文条件、改用字段条件"
+        text.trim().lines().next(),
+        Some("这次查询需要的内存超过上限。请缩小时间范围，或去掉全文条件、改用字段条件"),
+        "{text}"
     );
 }
 
@@ -963,6 +1095,84 @@ fn ui_console_other_failure() {
         "401",
         "unauthorized",
         expected.json()["message"].as_str().unwrap(),
+    ] {
+        assert!(text.contains(part), "{part}：{text}");
+    }
+}
+
+/// 改答全部 `_search` 请求为带 `x-request-id` 的错误信封后打开 `/ui` 并填入口令。
+fn open_answering(s: &Server, status: u16, request_id: &str, envelope: &Value) -> Browser {
+    let body = envelope.to_string();
+    let mut b = open_with(s, |b| {
+        b.answer_all(
+            "/api/default/_search",
+            status,
+            &[
+                ("Content-Type", "application/json"),
+                ("x-request-id", request_id),
+            ],
+            &body,
+        );
+    });
+    fill_token(&mut b, TOKEN);
+    b
+}
+
+/// 结果区 `#<p>-result` 内文字恰为 `text` 的元素的计算样式 `user-select`；没有这样的元素时为 null。
+fn user_select_of(b: &mut Browser, p: &str, text: &str) -> Value {
+    b.eval(&format!(
+        "(() => {{ const e = [...document.querySelectorAll('#{p}-result *')].find(x => x.children.length === 0 \
+         && x.textContent.trim() === {text:?}); return e === undefined ? null : getComputedStyle(e).userSelect; }})()"
+    ))
+}
+
+#[test]
+fn ui_console_error_request_id_search() {
+    let (_fx, s) = start(&[]);
+    let envelope =
+        json!({"code": 503, "reason": "unavailable", "message": "object store unreachable"});
+    let mut b = open_answering(&s, 503, "u-503", &envelope);
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    b.click("s-query");
+    assert!(
+        b.wait_text("s-result", "u-503", WAIT),
+        "{}",
+        b.text("s-result")
+    );
+    let text = b.text("s-result");
+    for part in [
+        "暂时无法读取数据（对象存储不可访问或服务正在停止）",
+        "object store unreachable",
+        "请求编号",
+        "u-503",
+    ] {
+        assert!(text.contains(part), "{part}：{text}");
+    }
+    let us = user_select_of(&mut b, "s", "u-503");
+    assert!(us.is_string(), "结果区没有文字恰为 u-503 的元素：{text}");
+    assert_ne!(us, json!("none"));
+}
+
+#[test]
+fn ui_console_error_request_id_ledger() {
+    let (_fx, s) = start(&[]);
+    let envelope = json!({"code": 400, "reason": "invalid_sql", "message": "near SELEC"});
+    let mut b = open_answering(&s, 400, "u-400", &envelope);
+    screen(&mut b, "ledger");
+    b.click("l-query");
+    assert!(
+        b.wait_text("l-result", "u-400", WAIT),
+        "{}",
+        b.text("l-result")
+    );
+    let text = b.text("l-result");
+    for part in [
+        "查询写法有误",
+        "invalid_sql",
+        "near SELEC",
+        "请求编号",
+        "u-400",
     ] {
         assert!(text.contains(part), "{part}：{text}");
     }
@@ -1146,4 +1356,522 @@ fn ui_console_ledger_not_colored() {
             "第 {c} 列内层样式：{cells:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// login — 界面登录
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ui_console_login_hidden_without_oidc() {
+    let (_fx, s) = start(&[]);
+    let mut b = open(&s);
+    std::thread::sleep(Duration::from_secs(5));
+    let config = oidc_config_requests(&mut b);
+    assert_eq!(config.len(), 1, "GET /ui/oidc/config 不是恰一次");
+    assert_eq!(b.status(&config[0]), Some(404));
+    assert!(!b.exists("#login"), "没配界面登录时显示了「登录」入口");
+    assert!(b.exists("#token"));
+    assert_eq!(b.text("token-note"), "只保存在本标签页，关闭即清除");
+    // 结果区只有查询前的占位（REQ-AMB-UI-CONSOLE-V4-FREEDOM），没有出错文字
+    assert!(
+        !b.exists("#s-result .message"),
+        "检索屏结果区有出错文字：{}",
+        b.text("s-result")
+    );
+}
+
+/// 场景约定的「配了界面登录的实例」：`auth.token` 为 `s3cret`，`auth.oidc.*` 指向台架身份平台（含界面登录的
+/// 三项），授权文件的 `idp_grants` 把 `alice` 映射为 `querier`、范围 [`*`]；等到说明文档已取得（`GET /ui/oidc/config` 得 200）。
+fn login_instance() -> (Fixture, oidc::Idp, Server) {
+    let fx = Fixture::new();
+    let idp = oidc::Idp::start(&fx);
+    let cfg = idp.login_config();
+    let grant = oidc::idp_grant(
+        &format!("subject = \"{}\"", oidc::ALICE_SUB),
+        r#"[{ role = "querier", streams = ["*"] }]"#,
+    );
+    let s = authz::start(&fx, &[grant], &oidc::overrides(&cfg, &[]));
+    let (_, ok) = poll(
+        Duration::from_secs(20),
+        || s.get("/ui/oidc/config").status,
+        |st| *st == 200,
+    );
+    assert!(ok, "20 秒内 GET /ui/oidc/config 未得 200");
+    (fx, idp, s)
+}
+
+/// 等「登录」入口出现。
+fn wait_login_entry(b: &mut Browser) {
+    assert!(
+        b.wait_until("document.getElementById('login') !== null", WAIT),
+        "没有「登录」入口"
+    );
+}
+
+/// 让当前标签页导航到 `url`，等页面的路径为 `path` 且加载完成（回调页会抹掉查询串，不能按完整地址等）。
+fn goto(b: &mut Browser, url: &str, path: &str) {
+    b.call("Page.navigate", json!({"url": url}));
+    assert!(
+        b.wait_until(
+            &format!(
+                "location.pathname === {} && document.readyState === 'complete'",
+                json!(path)
+            ),
+            Duration::from_secs(30)
+        ),
+        "{url}：{}",
+        b.eval("location.href + ' ' + document.readyState")
+    );
+}
+
+/// 当前页面会话存储、本地存储中的全部取值与 Cookie。
+fn storage_values(b: &mut Browser) -> (Vec<String>, Vec<String>, String) {
+    let v = b.eval("[Object.values(sessionStorage), Object.values(localStorage), document.cookie]");
+    let a = v.as_array().unwrap();
+    (
+        serde_json::from_value(a[0].clone()).unwrap(),
+        serde_json::from_value(a[1].clone()).unwrap(),
+        a[2].as_str().unwrap_or_default().to_owned(),
+    )
+}
+
+/// 查询串的各参数（百分号解码后）。
+fn query_params(url: &str) -> std::collections::HashMap<String, String> {
+    let q = url.split_once('?').map(|(_, q)| q).unwrap_or_default();
+    let decode = |s: &str| {
+        let bytes = s.replace('+', " ").into_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let h = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(h, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    };
+    q.split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            (decode(k), decode(v))
+        })
+        .collect()
+}
+
+/// 浏览器发出的、地址在台架身份平台授权地址上的请求（整页导航）。
+fn authorize_navigations(b: &mut Browser, idp: &oidc::Idp) -> Vec<common::browser::Request> {
+    let prefix = idp.url("/authorize");
+    b.requests()
+        .into_iter()
+        .filter(|r| r.url.starts_with(&prefix))
+        .collect()
+}
+
+/// 「测试台架拦截浏览器对台架身份平台授权地址的导航，不予放行」：对它的导航一律以 204 改答，不到达身份平台，
+/// 页面也不离开（导航得 204 时浏览器留在原页面）。
+fn block_authorize(b: &mut Browser, endpoint: &str) {
+    let prefix = endpoint.to_owned();
+    b.answer_where(move |r| r.url.starts_with(&prefix), 204, &[], "");
+}
+
+/// 等对授权地址 `endpoint` 的导航累计达到 `n` 个（至多 [`WAIT`]），返回全部。
+fn wait_authorize(b: &mut Browser, endpoint: &str, n: usize) -> Vec<common::browser::Request> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let rs: Vec<_> = b
+            .requests()
+            .into_iter()
+            .filter(|r| r.url.starts_with(endpoint))
+            .collect();
+        if rs.len() >= n {
+            return rs;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{WAIT:?} 内对授权地址的导航只有 {} 个",
+            rs.len()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 浏览器发出的 `POST /ui/oidc/token`。
+fn token_posts(b: &mut Browser) -> Vec<common::browser::Request> {
+    b.requests()
+        .into_iter()
+        .filter(|r| r.method == "POST" && r.path() == "/ui/oidc/token")
+        .collect()
+}
+
+/// 当前标签页的访问口令（会话存储中口令框的内容）。
+fn session_token(b: &mut Browser) -> String {
+    b.eval("sessionStorage.getItem('amberlog.token') ?? ''")
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// 点「登录」，台架身份平台通过 `alice` 的登录后，等页面回到 `/ui` 且口令框已有登录换得的令牌；返回该令牌。
+fn login_as_alice(b: &mut Browser, s: &Server) -> String {
+    wait_login_entry(b);
+    b.click("login");
+    let target = json!(url(s));
+    assert!(
+        b.wait_until(
+            &format!(
+                "location.href === {target} && document.readyState === 'complete' \
+                 && document.getElementById('token') !== null && document.getElementById('token').value !== ''"
+            ),
+            Duration::from_secs(30)
+        ),
+        "登录后没有回到 /ui：{}",
+        b.eval("location.href + ' ' + document.body.innerText")
+    );
+    session_token(b)
+}
+
+#[test]
+fn ui_console_login_entry_with_token_box() {
+    let (_fx, idp, s) = login_instance();
+    let mut b = open(&s);
+    wait_login_entry(&mut b);
+    fill_token(&mut b, "wrong-token");
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    b.click("s-query");
+    assert!(
+        b.wait_text("s-result", "请求失败", WAIT),
+        "{}",
+        b.text("s-result")
+    );
+    assert!(b.exists("header #login"), "「登录」入口不在口令框旁");
+    assert_eq!(
+        b.eval("document.getElementById('token').getAttribute('aria-invalid')"),
+        json!("true")
+    );
+    assert_eq!(b.text("token-hint"), "口令无效或未填写");
+    assert_eq!(b.eval("location.pathname"), json!("/ui"));
+    assert!(authorize_navigations(&mut b, &idp).is_empty());
+    assert!(idp.requests_to("/authorize").is_empty());
+}
+
+#[test]
+fn ui_console_login_redirect_state_pkce() {
+    let (_fx, idp, s) = login_instance();
+    let config = s.get("/ui/oidc/config").json();
+    let endpoint = config["authorization_endpoint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut b = open_with(&s, |b| block_authorize(b, &endpoint));
+    wait_login_entry(&mut b);
+    b.click("login");
+    let nav = &wait_authorize(&mut b, &endpoint, 1)[0];
+    assert_eq!(nav.url.split('?').next(), Some(endpoint.as_str()));
+    let p = query_params(&nav.url);
+    let origin = format!("http://{}", s.addr);
+    assert_eq!(p.get("response_type").map(String::as_str), Some("code"));
+    assert_eq!(
+        p.get("client_id").map(String::as_str),
+        Some(oidc::CLIENT_ID)
+    );
+    assert_eq!(
+        p.get("redirect_uri"),
+        Some(&format!("{origin}/ui/callback"))
+    );
+    assert!(p.get("scope").is_some_and(|x| !x.is_empty()), "{p:?}");
+    assert_eq!(
+        p.get("code_challenge_method").map(String::as_str),
+        Some("S256")
+    );
+    let state = p.get("state").cloned().unwrap_or_default();
+    assert!(!state.is_empty(), "{p:?}");
+    let challenge = p.get("code_challenge").cloned().unwrap_or_default();
+    let (session, local, cookie) = storage_values(&mut b);
+    assert!(session.contains(&state), "会话存储中没有 state");
+    let verifier = session
+        .iter()
+        .find(|v| authz::base64url(&sha2::Sha256::digest(v.as_bytes())) == challenge)
+        .cloned();
+    assert!(
+        verifier.is_some(),
+        "会话存储中没有摘要等于 code_challenge 的值"
+    );
+    let verifier = verifier.unwrap();
+    for x in [&state, &verifier] {
+        assert!(
+            !local.iter().any(|v| v.contains(x.as_str())),
+            "本地存储含 state 或校验值"
+        );
+        assert!(!cookie.contains(x.as_str()), "Cookie 含 state 或校验值");
+    }
+    assert!(
+        idp.requests_to("/authorize").is_empty(),
+        "授权地址的导航被放行了"
+    );
+}
+
+#[test]
+fn ui_console_login_token_becomes_password() {
+    let (_fx, idp, s) = login_instance();
+    ingest_ok(&s, "app", r#"[{"msg":"after-login"}]"#);
+    let mut b = open(&s);
+    let t = login_as_alice(&mut b, &s);
+    assert!(!t.is_empty() && t != TOKEN);
+    let posts = token_posts(&mut b);
+    assert_eq!(posts.len(), 1, "POST /ui/oidc/token 不是恰一次");
+    let body = posts[0].json();
+    let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["code", "code_verifier", "redirect_uri"]);
+    // 令牌端点恰被交换一次：口令框里的令牌就是这次 POST /ui/oidc/token 换得的那一枚
+    assert_eq!(idp.requests_to("/token").len(), 1);
+    assert_eq!(b.eval("location.href"), json!(url(&s)));
+    let history = b.call("Page.getNavigationHistory", json!({}));
+    for e in history["entries"].as_array().unwrap() {
+        let u = e["url"].as_str().unwrap_or_default();
+        assert!(!u.contains("code="), "浏览历史含授权码：{u}");
+    }
+    let state = query_params(&authorize_navigations(&mut b, &idp)[0].url)["state"].clone();
+    let verifier = body["code_verifier"].as_str().unwrap().to_owned();
+    let (session, local, cookie) = storage_values(&mut b);
+    assert!(!local.iter().any(|v| v.contains(&t)) && !cookie.contains(&t));
+    assert!(!session.contains(&state) && !session.contains(&verifier));
+    search_stream(&mut b, "app");
+    let r = wait_requests(&mut b, 1, is_search).pop().unwrap();
+    assert_eq!(
+        r.header("authorization").map(str::to_owned),
+        Some(format!("Bearer {t}"))
+    );
+    assert!(
+        b.text("s-result").contains("after-login"),
+        "{}",
+        b.text("s-result")
+    );
+}
+
+#[test]
+fn ui_console_login_callback_check_fails() {
+    let (_fx, idp, s) = login_instance();
+    let endpoint = idp.url("/authorize");
+    let mut b = open_with(&s, |b| block_authorize(b, &endpoint));
+    let origin = format!("http://{}", s.addr);
+    for (i, make) in [
+        (|_: &str| "/ui/callback?code=c1&state=wrong".to_owned()) as fn(&str) -> String,
+        |_| "/ui/callback?code=c1".to_owned(),
+        |st| format!("/ui/callback?error=access_denied&state={st}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if i > 0 {
+            b.open(&url(&s));
+        }
+        wait_login_entry(&mut b);
+        b.click("login");
+        let navs = wait_authorize(&mut b, &endpoint, i + 1);
+        let state = query_params(&navs[i].url)["state"].clone();
+        let target = make(&state);
+        goto(&mut b, &format!("{origin}{target}"), "/ui/callback");
+        assert!(
+            b.wait_until(
+                "document.body !== null && document.body.innerText.includes('登录失败')",
+                WAIT
+            ),
+            "{target}：{}",
+            b.eval("document.body.innerText")
+        );
+        assert_eq!(b.eval("location.search"), json!(""), "{target}");
+        assert_eq!(session_token(&mut b), "", "{target}");
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(token_posts(&mut b).is_empty(), "发出了 POST /ui/oidc/token");
+}
+
+#[test]
+fn ui_console_login_exchange_rejected() {
+    let (_fx, idp, s) = login_instance();
+    let envelope = json!({"code": 400, "reason": "invalid_request", "message": "rejected"});
+    let mut b = open_with(&s, |b| {
+        b.answer_all(
+            "/ui/oidc/token",
+            400,
+            &[("Content-Type", "application/json")],
+            &envelope.to_string(),
+        );
+    });
+    wait_login_entry(&mut b);
+    b.click("login");
+    assert!(
+        b.wait_until(
+            "location.pathname === '/ui/callback' && document.body !== null && document.body.innerText.includes('登录失败')",
+            Duration::from_secs(30)
+        ),
+        "{}",
+        b.eval("location.href + ' ' + document.body.innerText")
+    );
+    let text = b
+        .eval("document.body.innerText")
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(text.contains("400"), "{text}");
+    assert_eq!(session_token(&mut b), "");
+    let state = query_params(&authorize_navigations(&mut b, &idp)[0].url)["state"].clone();
+    let verifier = token_posts(&mut b)[0].json()["code_verifier"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (session, _, _) = storage_values(&mut b);
+    assert!(
+        !session.contains(&state) && !session.contains(&verifier),
+        "{session:?}"
+    );
+}
+
+#[test]
+fn ui_console_login_callback_static() {
+    let (_fx, _idp, s) = login_instance();
+    let plain = s.get("/ui/callback");
+    let with_query = s.get("/ui/callback?code=abc&state=xyz");
+    for r in [&plain, &with_query] {
+        assert_eq!(r.status, 200);
+        assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+        assert_eq!(r.header("x-frame-options"), Some("DENY"));
+        assert_eq!(r.header("referrer-policy"), Some("no-referrer"));
+        let csp = r.header("content-security-policy").unwrap_or_default();
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    }
+    assert_eq!(plain.body, with_query.body);
+    let target = format!("http://{}/ui/callback?code=abc&state=xyz", s.addr);
+    let mut b = Browser::launch();
+    goto(&mut b, &target, "/ui/callback");
+    std::thread::sleep(Duration::from_secs(5));
+    let urls: Vec<String> = b.requests().into_iter().map(|r| r.url).collect();
+    assert_eq!(urls, [target]);
+    assert!(
+        b.eval("document.body.innerText")
+            .as_str()
+            .unwrap_or_default()
+            .contains("登录失败")
+    );
+}
+
+#[test]
+fn ui_console_login_reauth_on_401() {
+    let (_fx, idp, s) = login_instance();
+    ingest_ok(&s, "app", r#"[{"msg":"after-login"}]"#);
+    let answered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let envelope = json!({"code": 401, "reason": "unauthorized", "message": "expired"});
+    let (a, m) = (answered.clone(), armed.clone());
+    let mut b = open_with(&s, move |b| {
+        // 下一个 _search 请求（armed 之后的第一个）改答为 401
+        b.answer_where(
+            move |r| {
+                use std::sync::atomic::Ordering::SeqCst;
+                r.path() == "/api/default/_search"
+                    && m.load(SeqCst)
+                    && a.compare_exchange(false, true, SeqCst, SeqCst).is_ok()
+            },
+            401,
+            &[("Content-Type", "application/json")],
+            &envelope.to_string(),
+        );
+    });
+    let first = login_as_alice(&mut b, &s);
+    search_stream(&mut b, "app");
+    assert!(b.text("s-result").contains("after-login"));
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    b.click("s-query");
+    // 整页跳转到授权地址，通过登录后回到 /ui，口令框里是新换得的令牌
+    assert!(
+        b.wait_until(
+            &format!(
+                "location.href === {} && document.readyState === 'complete' && document.getElementById('token') !== null \
+                 && document.getElementById('token').value !== '' && document.getElementById('token').value !== {}",
+                json!(url(&s)),
+                json!(first)
+            ),
+            Duration::from_secs(30)
+        ),
+        "没有重新登录回到 /ui：{}",
+        b.eval("location.href")
+    );
+    assert!(answered.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(authorize_navigations(&mut b, &idp).len(), 2);
+    assert_eq!(idp.requests_to("/token").len(), 2);
+    assert_ne!(
+        b.eval("document.getElementById('token').getAttribute('aria-invalid')"),
+        json!("true")
+    );
+    assert_ne!(token_hint(&mut b).as_deref(), Some("口令无效或未填写"));
+    let second = session_token(&mut b);
+    let n = requests_where(&mut b, is_search).len();
+    search_stream(&mut b, "app");
+    let r = wait_requests(&mut b, n + 1, is_search).pop().unwrap();
+    assert_eq!(
+        r.header("authorization").map(str::to_owned),
+        Some(format!("Bearer {second}"))
+    );
+    assert!(
+        b.text("s-result").contains("after-login"),
+        "{}",
+        b.text("s-result")
+    );
+}
+
+#[test]
+fn ui_console_login_reauth_stops_after_return() {
+    let (_fx, idp, s) = login_instance();
+    let envelope = json!({"code": 401, "reason": "unauthorized", "message": "not accepted"});
+    let mut b = open_with(&s, |b| {
+        b.answer_all(
+            "/api/default/_search",
+            401,
+            &[("Content-Type", "application/json")],
+            &envelope.to_string(),
+        );
+    });
+    login_as_alice(&mut b, &s);
+    let back = Instant::now();
+    while back.elapsed() < Duration::from_secs(10) {
+        b.eval("0");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(b.eval("location.href"), json!(url(&s)));
+    assert_eq!(
+        authorize_navigations(&mut b, &idp).len(),
+        1,
+        "回到 /ui 后又导航到了身份平台"
+    );
+    assert_eq!(
+        b.text("token-hint"),
+        "登录得到的身份未通过服务端认证，已停止自动登录"
+    );
+    // REQ-AMB-UI-CONSOLE-V4-LOGIN-REAUTH 的现行读法：停止以后直到口令被修改或再点「登录」都不跳转——再点一次「查询」、
+    // 页面重新载入后都照旧停止，提示留着
+    let n = requests_where(&mut b, is_search).len();
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    b.click("s-query");
+    wait_requests(&mut b, n + 1, is_search);
+    std::thread::sleep(Duration::from_secs(2));
+    b.open(&url(&s));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(b.eval("location.href"), json!(url(&s)));
+    assert_eq!(
+        authorize_navigations(&mut b, &idp).len(),
+        1,
+        "停止以后又导航到了身份平台"
+    );
+    assert_eq!(
+        token_hint(&mut b).as_deref(),
+        Some("登录得到的身份未通过服务端认证，已停止自动登录")
+    );
 }

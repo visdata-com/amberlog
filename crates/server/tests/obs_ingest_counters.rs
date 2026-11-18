@@ -1,4 +1,4 @@
-//! REQ-AMB-OBS-INGEST-COUNTERS-V3 的系统测试：以子进程运行 `amberlog`，
+//! REQ-AMB-OBS-INGEST-COUNTERS-V4 的系统测试：以子进程运行 `amberlog`，
 //! 经 `_json` 与 `_sent` 上报，直接读对象存储里的计数对象核对。对象存储默认 `file://` 临时目录；
 //! 「某前缀持续拒绝访问」用 MinIO 台架的受限用户加按对象标签拒绝读取（[`S3Instance::deny_reads`]）。
 //!
@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use common::api::{
     FLUSH_1H, HOUR_US, MINUTE_US, WalFault, counter_bytes, counter_file, counter_window,
-    create_stream, ingest, ingest_ok, ingest_with, now_us, poll, sent, sent_element, settle_minute,
-    window_in,
+    create_stream, ingest, ingest_ok, ingest_with, now_us, poll, search_resp, sent, sent_element,
+    settle_minute, window_in,
 };
+use common::authz::{self, ServiceToken, token_entry};
 use common::s3::S3Instance;
 use common::{Fixture, Server};
 use serde_json::{Value, json};
@@ -640,4 +641,130 @@ fn counters_sent_wal_failure_503() {
     let r = sent(&server, "sw", &format!("[{}]", sent_element("a", w, 1)));
     fault.clear();
     r.assert_envelope(503, "unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// _sent 的来源限定（REQ-AMB-OBS-INGEST-COUNTERS-V4）：授权文件与服务令牌由测试现场生成，令牌 X 所在条目的 `name`
+// 取它的小写
+// ---------------------------------------------------------------------------
+
+/// 场景里 2023-11-14T22 这一 UTC 小时内的分钟窗口。
+const W22: i64 = 1_700_000_040_000_000;
+
+/// 以服务令牌 `token` 向 `stream` 的 `_sent` 提交 `body`。
+fn sent_as(server: &Server, token: &ServiceToken, stream: &str, body: &str) -> common::Resp {
+    server.request(
+        "POST",
+        &format!("/api/default/{stream}/_sent"),
+        &[("Authorization", &token.bearer())],
+        body.as_bytes(),
+    )
+}
+
+/// 令牌 S（`writer`，范围 [`app_*`]，`sources` 为 `sources`）。
+fn source_restricted(fx: &Fixture, s: &ServiceToken, sources: &str) -> Server {
+    authz::start(
+        fx,
+        &[authz::entry(
+            "s",
+            &[&s.hash],
+            r#"[{ role = "writer", streams = ["app_*"] }]"#,
+            &format!("sources = {sources}"),
+        )],
+        &[],
+    )
+}
+
+/// `stream` 在 2023-11-14T22 这一小时的计数对象不存在，或不含 `sources` 中任一来源的上报。
+fn assert_no_sent(fx: &Fixture, stream: &str, sources: &[&str]) {
+    let Some(bytes) = counter_bytes(fx, stream, W22) else {
+        return;
+    };
+    let obj: Value = serde_json::from_slice(&bytes).unwrap();
+    for e in obj["windows"].as_array().unwrap() {
+        for s in sources {
+            assert!(e["sent"].get(s).is_none(), "{e}");
+        }
+    }
+}
+
+/// 以 `auth.token` 查询 `stream` 时 `stream_not_found`（数据集不存在）。
+fn assert_not_created(server: &Server, stream: &str) {
+    search_resp(server, &format!("SELECT count(*) AS n FROM {stream}"))
+        .assert_envelope(400, "stream_not_found");
+}
+
+#[test]
+fn counters_sent_source_out_of_list_403() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1"]"#);
+    create_stream(&server, "app_a");
+    let body = format!(
+        "[{},{}]",
+        sent_element("fw-1", W22, 5),
+        sent_element("fw-2", W22, 7)
+    );
+    for stream in ["app_a", "app_new"] {
+        sent_as(&server, &s, stream, &body).assert_envelope(403, "forbidden");
+    }
+    std::thread::sleep(DEADLINE);
+    assert_no_sent(&fx, "app_a", &["fw-1", "fw-2"]);
+    assert_not_created(&server, "app_new");
+}
+
+#[test]
+fn counters_sent_invalid_element_before_source_check() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1"]"#);
+    create_stream(&server, "app_a");
+    // 第一份：第二个元素的窗口不按分钟对齐；第二份：第二个元素的来源不合正则
+    let misaligned = json!({"source": "fw-1", "window_start": W22 - 10_000_000, "window_end": W22 + 50_000_000, "sent": 1});
+    for second in [misaligned.to_string(), sent_element("_b", W22, 1)] {
+        let body = format!("[{},{second}]", sent_element("fw-2", W22, 1));
+        sent_as(&server, &s, "app_a", &body).assert_envelope(400, "invalid_request");
+    }
+}
+
+#[test]
+fn counters_sent_sources_listed_accepted() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1", "fw-2"]"#);
+    create_stream(&server, "app_a");
+    let body = format!(
+        "[{},{}]",
+        sent_element("fw-1", W22, 5),
+        sent_element("fw-2", W22, 7)
+    );
+    let r = sent_as(&server, &s, "app_a", &body);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json(), json!({"code": 200, "accepted": 2}));
+    expect_entry(&fx, "app_a", W22, |e| {
+        e["sent"] == json!({"fw-1": 5, "fw-2": 7})
+    });
+}
+
+#[test]
+fn counters_sent_out_of_scope_not_created() {
+    let fx = Fixture::new();
+    let w = ServiceToken::generate();
+    let server = authz::start(
+        &fx,
+        &[token_entry(
+            "w",
+            &w,
+            r#"[{ role = "writer", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    create_stream(&server, "hr");
+    let body = format!("[{}]", sent_element("a", W22, 1));
+    for stream in ["hr", "hr_new"] {
+        sent_as(&server, &w, stream, &body).assert_envelope(403, "forbidden");
+    }
+    std::thread::sleep(DEADLINE);
+    assert_no_sent(&fx, "hr", &["a"]);
+    assert_not_created(&server, "hr_new");
 }

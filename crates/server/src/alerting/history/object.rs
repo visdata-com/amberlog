@@ -1,7 +1,9 @@
 //! 评估记录对象的路径与格式（REQ-AMB-ALR-EVALUATIONS A 组）。
 //!
-//! 写出与读取用同一个解析与校验函数 [`parse`]：字段恰好齐全、类型对、`format_version` 为 1 才可解析；
-//! 其余（含 `format_version` 大于 1）一律按 REQ-AMB-ALR-EVALUATIONS-UNPARSEABLE 处置。
+//! 写出与读取用同一个解析与校验函数 [`parse`]：本块定义的字段齐全、类型对、`format_version` 为 1 才可解析；未定义的
+//! 字段忽略，缺 `target` 的元素照常可解析（REQ-AMB-ALR-EVALUATIONS-V2-READ-UNDEFINED-FIELDS）；其余（含 `format_version`
+//! 大于 1）一律按 REQ-AMB-ALR-EVALUATIONS-V2-READ-UNPARSEABLE 处置。写出时只写本块定义的字段，续写时保留的旧元素缺
+//! `target` 的不补写（-RESUME）。
 
 use amberlog_common::dataset::is_valid_stream_name;
 use amberlog_query::system::EvaluationRow;
@@ -93,7 +95,7 @@ pub(super) fn rule_name_shape(name: &str) -> bool {
     is_valid_stream_name(name)
 }
 
-/// `evaluations` 的一个元素（REQ-AMB-ALR-EVALUATIONS-ENTRY-SHAPE 的十二个字段）。没有地址与请求头的字段
+/// `evaluations` 的一个元素（REQ-AMB-ALR-EVALUATIONS-V2-ENTRY-SHAPE 的十三个字段）。没有地址与请求头的字段
 /// （REQ-AMB-ALR-EVALUATIONS-NO-SECRETS）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Entry {
@@ -109,6 +111,8 @@ pub(super) struct Entry {
     pub delivery: String,
     pub attempts: i64,
     pub last_http_status: Option<i64>,
+    /// 该次评估所查的对象；本块之前的版本写出的元素没有它，续写时原样保留为缺。
+    pub target: Option<String>,
 }
 
 impl Entry {
@@ -127,6 +131,7 @@ impl Entry {
             delivery: r.delivery.label().to_owned(),
             attempts: i64::from(r.attempts),
             last_http_status: r.last_http_status.map(i64::from),
+            target: Some(r.target.clone()),
         }
     }
 
@@ -146,11 +151,12 @@ impl Entry {
             delivery: self.delivery.clone(),
             attempts: self.attempts,
             last_http_status: self.last_http_status,
+            target: self.target.clone(),
         }
     }
 
     fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "scheduled_at": self.scheduled_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -163,7 +169,11 @@ impl Entry {
             "delivery": self.delivery,
             "attempts": self.attempts,
             "last_http_status": self.last_http_status,
-        })
+        });
+        if let Some(target) = &self.target {
+            v["target"] = Value::from(target.as_str());
+        }
+        v
     }
 }
 
@@ -198,14 +208,15 @@ pub(super) fn merge(base: &[Entry], new: &[Entry]) -> Vec<Entry> {
     out
 }
 
-/// 解析与校验（REQ-AMB-ALR-EVALUATIONS-UNPARSEABLE）：不是合法 JSON、`format_version` 缺失或不是整数或不为 1、
-/// 字段多出或缺少、类型不对，都为 `Err`（说明不含对象内容）。读到的元素按 `scheduled_at` 升序整理，同一计划时刻只留先出现的。
+/// 解析与校验（REQ-AMB-ALR-EVALUATIONS-V2-READ-UNPARSEABLE）：不是合法 JSON、`format_version` 缺失或不是整数或不为 1、
+/// 本块定义的字段缺少（元素的 `target` 除外）、类型不对，都为 `Err`（说明不含对象内容）；未定义的字段忽略、不读进来。
+/// 读到的元素按 `scheduled_at` 升序整理，同一计划时刻只留先出现的。
 pub(super) fn parse(bytes: &[u8]) -> Result<Document, String> {
     let value: Value = serde_json::from_slice(bytes).map_err(|e| format!("not valid JSON: {e}"))?;
     let obj = value
         .as_object()
         .ok_or_else(|| "not a JSON object".to_owned())?;
-    exact_keys(
+    required_keys(
         obj,
         &["format_version", "org", "rule", "evaluations"],
         "the object",
@@ -233,6 +244,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Document, String> {
     })
 }
 
+/// 元素必有的十二个字段（另有可缺的 `target`）。
 const ENTRY_FIELDS: [&str; 12] = [
     "scheduled_at",
     "started_at",
@@ -252,7 +264,7 @@ fn entry(item: &Value) -> Result<Entry, String> {
     let obj = item
         .as_object()
         .ok_or_else(|| "not a JSON object".to_owned())?;
-    exact_keys(obj, &ENTRY_FIELDS, "the element")?;
+    required_keys(obj, &ENTRY_FIELDS, "the element")?;
     Ok(Entry {
         scheduled_at: int(obj, "scheduled_at")?,
         started_at: nullable(obj, "started_at", Value::as_i64, "an integer")?,
@@ -266,13 +278,15 @@ fn entry(item: &Value) -> Result<Entry, String> {
         delivery: string(obj, "delivery")?,
         attempts: int(obj, "attempts")?,
         last_http_status: nullable(obj, "last_http_status", Value::as_i64, "an integer")?,
+        // 缺 `target` 的元素合规；存在而不是字符串的不合规
+        target: match obj.get("target") {
+            None => None,
+            Some(_) => Some(string(obj, "target")?),
+        },
     })
 }
 
-fn exact_keys(obj: &Map<String, Value>, want: &[&str], what: &str) -> Result<(), String> {
-    if let Some(k) = obj.keys().find(|k| !want.contains(&k.as_str())) {
-        return Err(format!("{what} has an unknown field `{k}`"));
-    }
+fn required_keys(obj: &Map<String, Value>, want: &[&str], what: &str) -> Result<(), String> {
     if let Some(k) = want.iter().find(|k| !obj.contains_key(**k)) {
         return Err(format!("{what} lacks the field `{k}`"));
     }

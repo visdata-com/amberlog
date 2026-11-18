@@ -1,6 +1,6 @@
 import { DAY_US, MINUTE_US, formatLocal, formatOffset } from "../../lib/time.ts";
 
-/** 图表使用秒级时间；查询边界仍保留原始微秒精度。 */
+/** 时刻摘要（REQ-AMB-UI-CONSOLE-V4-TIME-SUMMARY）：分布图的范围文字与坐标轴刻度到秒；柱的提示另用完整写法。 */
 export function histogramTime(us: bigint, timezone: string): string {
   return formatLocal(us, timezone).slice(0, 19);
 }

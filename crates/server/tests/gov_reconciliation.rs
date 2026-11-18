@@ -7,6 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::api::{HOUR_US, MINUTE_US, create_stream, ingest_ok, now_us, poll};
+use common::authz::{self, ServiceToken, token_entry};
 use common::gov::{
     committed, entry, first_bucket_manifest, query, query_ok, write_counter_bytes, write_counters,
 };
@@ -488,4 +489,111 @@ fn gov_reconciliation_ts_sent_overflow() {
         )],
     );
     query(&i.server, APP, minute(h)).assert_envelope(500, "internal");
+}
+
+// ---------------------------------------------------------------------------
+// visibility — 按主体过滤（REQ-AMB-GOV-RECONCILIATION-V4）
+// ---------------------------------------------------------------------------
+
+/// 以授权文件（令牌 Q：查询者，范围 [`app`]）启动并建出 `app` 与 `hr`，两者在 H 的计数对象都恰含 W1、W2 两个窗口；
+/// `hr` 的另以 `hr_bytes` 覆盖（`None` 不覆盖）。
+fn scoped(hr_bytes: Option<&[u8]>) -> (Fixture, Server, ServiceToken) {
+    let fx = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &fx,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app"] }]"#,
+        )],
+        &[],
+    );
+    for st in ["app", "hr"] {
+        create_stream(&s, st);
+        write_counters(
+            &fx,
+            st,
+            H,
+            &[
+                entry(H, 1, 1, json!({})),
+                entry(H + MINUTE_US, 1, 1, json!({})),
+            ],
+        );
+    }
+    if let Some(b) = hr_bytes {
+        write_counter_bytes(&fx, "hr", H, b);
+    }
+    (fx, s, q)
+}
+
+/// 以凭据 `bearer`、恰覆盖 H 的时间范围查询 `sql`。
+fn query_as(s: &Server, bearer: &str, sql: &str) -> common::Resp {
+    let body =
+        json!({"query": {"sql": sql, "start_time": H, "end_time": H + HOUR_US, "size": 10000}});
+    s.request(
+        "POST",
+        "/api/default/_search",
+        &[("Authorization", bearer)],
+        body.to_string().as_bytes(),
+    )
+}
+
+fn hits_as(s: &Server, bearer: &str, sql: &str) -> Vec<Value> {
+    let r = query_as(s, bearer, sql);
+    assert_eq!(r.status, 200, "{sql}：{}", r.text());
+    r.json()["hits"].as_array().unwrap().clone()
+}
+
+#[test]
+fn recon_rows_visible_only() {
+    let (_fx, s, q) = scoped(None);
+    let hits = hits_as(
+        &s,
+        &q.bearer(),
+        "SELECT dataset, window_start FROM _reconciliation",
+    );
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(
+        hits.iter().all(|h| h["dataset"] == "default/app"),
+        "{hits:?}"
+    );
+    assert_eq!(
+        hits_as(&s, &q.bearer(), "SELECT count(*) AS n FROM _reconciliation"),
+        [json!({"n": 2})]
+    );
+    assert_eq!(
+        query_ok(
+            &s,
+            "SELECT count(*) AS n FROM _reconciliation",
+            (H, H + HOUR_US)
+        ),
+        [json!({"n": 4})]
+    );
+}
+
+#[test]
+fn recon_named_invisible_empty() {
+    let (_fx, s, q) = scoped(None);
+    assert_eq!(
+        hits_as(
+            &s,
+            &q.bearer(),
+            "SELECT * FROM _reconciliation WHERE dataset = 'default/hr'"
+        ),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn recon_invisible_objects_not_read() {
+    let (_fx, s, q) = scoped(Some(b"not json"));
+    let hits = hits_as(&s, &q.bearer(), "SELECT dataset FROM _reconciliation");
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(
+        hits.iter().all(|h| h["dataset"] == "default/app"),
+        "{hits:?}"
+    );
+    query(&s, "SELECT dataset FROM _reconciliation", (H, H + HOUR_US))
+        .assert_envelope(500, "internal");
 }

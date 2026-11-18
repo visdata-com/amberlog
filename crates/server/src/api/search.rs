@@ -2,7 +2,8 @@
 //!
 //! 业务在 [`amberlog_query::search::Engine`]；这里只做 HTTP 一侧的适配：`{org}` 路径段、请求体字节、应答组装。
 //!
-//! 校验链：`{org}` 路径段 → `Content-Encoding` 与请求体大小（[`super::body::read_body`]，REQ-AMB-ING-JSON-ENDPOINT 对
+//! 校验链：`{org}` 路径段 → 授权的路径一步（[`Access::path_step`]：查询者或治理查看者，REQ-AMB-AUTH-AUTHZ-STEP-PATH）→
+//! `Content-Encoding` 与请求体大小（[`super::body::read_body`]，REQ-AMB-ING-JSON-ENDPOINT 对
 //! `/api/` 下全部 POST 端点的规定，`Content-Type` 不看）→ 交 `Engine`（请求体是否合法 JSON 及其后各步）。
 //!
 //! [`routes`] 以 [`super::Storage`] 中的可见集、快照链、闸门与数据文件句柄，和 [`super::Settings`] 中的
@@ -23,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 use super::body::read_body;
 use super::namespace::org_from_path;
 use super::{Settings, Storage};
+use crate::authz::Access;
 use crate::gateway::{ApiError, AppState, Endpoint};
 use crate::telemetry::Metrics;
 
@@ -73,6 +75,7 @@ pub fn router(engine: Arc<Engine>, max_body_bytes: u64, metrics: Arc<Metrics>) -
 
 async fn search(
     State(search): State<Search>,
+    access: Access,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
@@ -81,11 +84,15 @@ async fn search(
         Ok(org) => org,
         Err(rejection) => return rejection.into_response(),
     };
+    // 路径一步不看数据集，只有 403 一种否决（REQ-AMB-AUTH-AUTHZ-DENY-ENDPOINT）
+    if access.path_step(None, &headers).is_err() {
+        return ApiError::forbidden().into_response();
+    }
     let bytes = match read_body(&headers, body, search.max_body_bytes).await {
         Ok(b) => b,
         Err(e) => return e.into_response(),
     };
-    match search.engine.search(&org, &bytes).await {
+    match search.engine.search(&org, &bytes, &access).await {
         Ok(r) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/json")],
@@ -104,6 +111,7 @@ async fn search(
 pub(crate) fn to_api_error(e: QueryError) -> ApiError {
     let message = match e.reason {
         Reason::Internal => return ApiError::internal().with_cause(e.message),
+        Reason::Forbidden => return ApiError::forbidden(),
         Reason::Unavailable if e.moved => {
             "data moved while the query ran; the query may be retried"
         }

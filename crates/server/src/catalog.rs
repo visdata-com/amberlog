@@ -2,7 +2,8 @@
 //! （REQ-AMB-STO-COLD-CATALOG；ADR-0039 第 6 条 B、第 7 条，ADR-0046）。写入实例与只读目录模式都提供，作答相同。
 //!
 //! 目录前缀下的校验链（CHAIN）：停机闸门与认证在接入面（[`crate::gateway`]，路由之前）；其后由 [`answer`] 自己做路由与
-//! 方法匹配（[`route`]，未注册路径回 405、`Allow` 为空）→ `{prefix}` → 命名空间与表名 → 读取对象存储（[`projection`]）。
+//! 方法匹配（[`route`]，未注册路径回 405、`Allow` 为空）→ `{prefix}` → 命名空间与表名 → 授权的路径一步（[`Access::path_step`]，
+//! REQ-AMB-STO-COLD-CATALOG-V2-CHAIN；`/v1/config` 没有 `{prefix}` 与名字，紧接路由与方法匹配）→ 读取对象存储（[`projection`]）。
 //! 各步的失败都以错误信封类型 [`ApiError`] 返回，由出口 [`shape`] 统一改写为目录错误体并计数。目录端点不读请求体。
 
 mod projection;
@@ -19,12 +20,13 @@ use axum::Json;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use serde_json::{Value, json};
 
+use crate::authz::{Access, Denied};
 use crate::gateway::{ApiError, Enveloped};
 use crate::telemetry::Metrics;
 
@@ -68,7 +70,13 @@ type Refusal = Box<ApiError>;
 #[derive(Clone, Copy)]
 struct Matched(&'static str);
 
-async fn answer(State(catalog): State<Arc<Catalog>>, method: Method, uri: Uri) -> Response {
+async fn answer(
+    State(catalog): State<Arc<Catalog>>,
+    access: Access,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
     let Some(route) = Route::of(uri.path()) else {
         return ApiError::method_not_allowed(HeaderValue::from_static("")).into_response();
     };
@@ -77,7 +85,11 @@ async fn answer(State(catalog): State<Arc<Catalog>>, method: Method, uri: Uri) -
             .into_response();
     };
     let head = method == Method::HEAD;
-    let mut res = match catalog.dispatch(route, head, uri.query()).await {
+    let check = Check {
+        access: &access,
+        headers: &headers,
+    };
+    let mut res = match catalog.dispatch(route, head, uri.query(), check).await {
         Ok(res) => res,
         Err(e) => (*e).into_response(),
     };
@@ -99,6 +111,35 @@ fn table_not_found() -> Refusal {
     ))
 }
 
+/// 授权的路径一步（REQ-AMB-AUTH-AUTHZ-STEP-PATH）：由 [`Catalog::dispatch`] 在名字校验之后、读取对象存储之前调用。
+#[derive(Clone, Copy)]
+struct Check<'a> {
+    access: &'a Access,
+    headers: &'a HeaderMap,
+}
+
+impl Check<'_> {
+    /// 主体没有目录端点的权限时 403（REQ-AMB-STO-COLD-CATALOG-V2-DENY-NO-ROLE）；`dataset` 不在主体的目录范围内时按
+    /// `not_found` 作答。
+    fn path_step(
+        self,
+        dataset: Option<&Dataset>,
+        not_found: fn() -> Refusal,
+    ) -> Result<(), Refusal> {
+        match self.access.path_step(dataset, self.headers) {
+            Ok(()) => Ok(()),
+            Err(Denied::Forbidden) => Err(Box::new(ApiError::forbidden())),
+            Err(Denied::Absent) => Err(not_found()),
+        }
+    }
+
+    /// 表名（stream）在主体的目录范围内（REQ-AMB-STO-COLD-CATALOG-V2-TABLE-EXISTS；查询者与目录读者两种角色范围的并集）：
+    /// 列举与命名空间的存在只为范围内的候选确定当前版本（SCOPE-NO-READ）。
+    fn in_scope(self, stream: &str) -> bool {
+        self.access.principal().in_catalog_scope(stream)
+    }
+}
+
 fn no_content() -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
@@ -109,31 +150,52 @@ impl Catalog {
         route: Route<'_>,
         head: bool,
         query: Option<&str>,
+        check: Check<'_>,
     ) -> Result<Response, Refusal> {
         match route {
-            Route::Config => Ok(Json(json!({
+            Route::Config => {
+                check.path_step(None, namespace_not_found)?;
+                Ok(Json(json!({
                 "defaults": {},
                 "overrides": {"prefix": self.prefix},
                 "endpoints": ENDPOINTS,
-            }))
-            .into_response()),
+                }))
+                .into_response())
+            }
             Route::Namespaces { prefix } => {
                 self.check_prefix(prefix, namespace_not_found)?;
                 if let Some(parent) = route::query_param(query, "parent") {
                     let org = org_from_path_segment(parent).map_err(|_| namespace_not_found())?;
-                    if !self.read(self.projection.namespace_exists(&org)).await? {
+                    check.path_step(None, namespace_not_found)?;
+                    if !self
+                        .read(
+                            self.projection
+                                .namespace_exists(&org, &|t| check.in_scope(t)),
+                        )
+                        .await?
+                    {
                         return Err(namespace_not_found());
                     }
                     return Ok(Json(json!({"namespaces": []})).into_response());
                 }
-                let names = self.read(self.projection.namespaces()).await?;
+                check.path_step(None, namespace_not_found)?;
+                let names = self
+                    .read(self.projection.namespaces(&|t| check.in_scope(t)))
+                    .await?;
                 let namespaces: Vec<Value> = names.into_iter().map(|n| json!([n])).collect();
                 Ok(Json(json!({"namespaces": namespaces})).into_response())
             }
             Route::Namespace { prefix, namespace } => {
                 self.check_prefix(prefix, namespace_not_found)?;
                 let org = org_from_path_segment(namespace).map_err(|_| namespace_not_found())?;
-                if !self.read(self.projection.namespace_exists(&org)).await? {
+                check.path_step(None, namespace_not_found)?;
+                if !self
+                    .read(
+                        self.projection
+                            .namespace_exists(&org, &|t| check.in_scope(t)),
+                    )
+                    .await?
+                {
                     return Err(namespace_not_found());
                 }
                 Ok(if head {
@@ -145,7 +207,10 @@ impl Catalog {
             Route::Tables { prefix, namespace } => {
                 self.check_prefix(prefix, namespace_not_found)?;
                 let org = org_from_path_segment(namespace).map_err(|_| namespace_not_found())?;
-                let tables = self.read(self.projection.tables(&org, false)).await?;
+                check.path_step(None, namespace_not_found)?;
+                let tables = self
+                    .read(self.projection.tables(&org, false, &|t| check.in_scope(t)))
+                    .await?;
                 if tables.is_empty() {
                     return Err(namespace_not_found());
                 }
@@ -164,6 +229,8 @@ impl Catalog {
                 let org = org_from_path_segment(namespace).map_err(|_| table_not_found())?;
                 let stream = stream_from_path_segment(table).map_err(|_| table_not_found())?;
                 let dataset = Dataset::new(org, stream);
+                // 范围外的表与不存在的表同一个出口，不为它读对象存储（V2-SCOPE-NO-READ）
+                check.path_step(Some(&dataset), table_not_found)?;
                 let n = self.read(self.projection.version(&dataset)).await?;
                 if n == 0 {
                     return Err(table_not_found());
@@ -211,11 +278,12 @@ impl Catalog {
     }
 }
 
-/// 目录错误体的 `type`（REQ-AMB-STO-COLD-CATALOG-ERR-TYPE-MAP）：与 `reason` 一一对应。目录前缀下只出现这六个 `reason`；
+/// 目录错误体的 `type`（REQ-AMB-STO-COLD-CATALOG-V2-ERR-TYPE-MAP）：与 `reason` 一一对应。目录前缀下只出现这七个 `reason`；
 /// 其余按状态码归到 4xx 或 5xx 的通用类型（不应出现）。
 fn iceberg_type(reason: Reason, code: u16) -> &'static str {
     match reason {
         Reason::Unauthorized => "NotAuthorizedException",
+        Reason::Forbidden => "ForbiddenException",
         Reason::NamespaceNotFound => "NoSuchNamespaceException",
         Reason::TableNotFound => "NoSuchTableException",
         Reason::MethodNotAllowed => "UnsupportedOperationException",

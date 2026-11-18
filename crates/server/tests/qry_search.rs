@@ -10,9 +10,11 @@ mod qry_common;
 use std::collections::BTreeSet;
 
 use common::api::{HOUR_US, MINUTE_US, now_us};
+use common::authz::{self, ServiceToken, assert_same_as_absent, token_entry};
 use common::gov::{entry, write_counters};
 use common::s3::S3Instance;
-use common::{Fixture, Server};
+use common::store::snapshot_rel;
+use common::{Fixture, Server, gov};
 use qry_common::{ALL, Chain, column, early, hits, query};
 use serde_json::{Value, json};
 
@@ -1043,4 +1045,150 @@ fn search_long_column_name_not_truncated() {
         name.to_uppercase()
     ));
     assert_eq!(hits(&v), [json!({ name.as_str(): 7 })]);
+}
+
+// ---------------------------------------------------------------------------
+// authz（REQ-AMB-QRY-SEARCH-ENDPOINT-V10）
+// ---------------------------------------------------------------------------
+
+/// 以凭据 `bearer` 提交请求体 `body`，另带请求头 `headers`。
+fn post_as(s: &Server, bearer: &str, headers: &[(&str, &str)], body: &[u8]) -> common::Resp {
+    let mut all = vec![("Authorization", bearer)];
+    all.extend_from_slice(headers);
+    s.request("POST", "/api/default/_search", &all, body)
+}
+
+/// 以凭据 `bearer` 提交 `sql`（`start_time` 为 0，`end_time` 为 4102444800000000）。
+fn sql_as(s: &Server, bearer: &str, sql: &str) -> common::Resp {
+    let body =
+        json!({"query": {"sql": sql, "start_time": 0, "end_time": 4_102_444_800_000_000i64}});
+    post_as(s, bearer, &[], body.to_string().as_bytes())
+}
+
+#[track_caller]
+fn assert_forbidden(r: &common::Resp) {
+    r.assert_envelope(403, "forbidden");
+    assert_eq!(
+        r.header("www-authenticate"),
+        Some(r#"Bearer error="insufficient_scope""#)
+    );
+}
+
+#[test]
+fn search_authz_out_of_scope_same_as_absent() {
+    let f = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    let sql = "SELECT * FROM hr_audit";
+    let r1 = sql_as(&s, &q.bearer(), sql);
+    s.ingest_ok("hr_audit", &json!([{"a": 1}]));
+    let r2 = sql_as(&s, &q.bearer(), sql);
+    r1.assert_envelope(400, "stream_not_found");
+    assert_same_as_absent(&r2, &r1);
+}
+
+#[test]
+fn search_authz_out_of_scope_disabled_as_absent() {
+    let f = Fixture::new();
+    gov::committed(&f, &[("hr_old", r#"[{"a":1}]"#)]);
+    let ds = f.dataset("hr_old");
+    let n = ds.current().expect("当前快照存在");
+    let mut snap = ds.snapshot(n);
+    snap["format_version"] = json!(3);
+    ds.write_json(&snapshot_rel(n), &snap);
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    let sql = "SELECT * FROM hr_old";
+    sql_as(&s, &q.bearer(), sql).assert_envelope(400, "stream_not_found");
+    sql_as(&s, common::BEARER, sql).assert_envelope(503, "unsupported_format_version");
+}
+
+#[test]
+fn search_authz_governance_viewer_scope() {
+    let f = Fixture::new();
+    let (g, g2) = (ServiceToken::generate(), ServiceToken::generate());
+    let s = authz::start(
+        &f,
+        &[
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["app_*"] }]"#,
+            ),
+            token_entry(
+                "g2",
+                &g2,
+                r#"[{ role = "governance_viewer", streams = ["zz_*"] }]"#,
+            ),
+        ],
+        &[],
+    );
+    for st in ["app_web", "hr_audit"] {
+        s.ingest_ok(st, &json!([{"a": 1}]));
+    }
+    let g = g.bearer();
+    assert_forbidden(&sql_as(&s, &g, "SELECT * FROM app_web"));
+    assert_forbidden(&sql_as(&s, &g, "SELECT * FROM hr_audit"));
+    let hits = |r: common::Resp| {
+        assert_eq!(r.status, 200, "{}", r.text());
+        r.json()["hits"].clone()
+    };
+    assert_eq!(
+        hits(sql_as(&s, &g, "SELECT dataset FROM _ledger")),
+        json!([{"dataset": "default/app_web"}])
+    );
+    assert_eq!(
+        hits(sql_as(&s, &g, "SELECT count(*) AS n FROM _ledger")),
+        json!([{"n": 1}])
+    );
+    assert_eq!(
+        hits(sql_as(
+            &s,
+            &g2.bearer(),
+            "SELECT dataset FROM _ledger WHERE dataset = 'default/hr_audit'"
+        )),
+        json!([])
+    );
+}
+
+#[test]
+fn search_authz_no_query_role_before_body() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "w",
+            &w,
+            r#"[{ role = "writer", streams = ["*"] }]"#,
+        )],
+        &[],
+    );
+    s.ingest_ok("app", &json!([{"a": 1}]));
+    let w = w.bearer();
+    let sql = json!({"query": {"sql": "SELECT * FROM app", "start_time": 0, "end_time": 4_102_444_800_000_000i64}})
+        .to_string();
+    for r in [
+        post_as(&s, &w, &[], b"not json"),
+        post_as(&s, &w, &[("Content-Encoding", "br")], b"x"),
+        post_as(&s, &w, &[], sql.as_bytes()),
+    ] {
+        assert_forbidden(&r);
+    }
 }

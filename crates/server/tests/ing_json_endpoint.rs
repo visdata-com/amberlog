@@ -1,11 +1,15 @@
-//! REQ-AMB-ING-JSON-ENDPOINT-V3 的系统测试：以子进程运行 `amberlog`，
+//! REQ-AMB-ING-JSON-ENDPOINT-V4 的系统测试：以子进程运行 `amberlog`，
 //! 经 `_json` 摄取、经 `_search` 查询；请求头、大小与合法 JSON 的共用规则另对 `_search` 与 `_sent` 核对。合法 JSON 的字节级判定（`ingest_json_validity_rules`）是 amberlog-ingest 的单元测试。
 
 mod common;
 
+use std::time::Duration;
+
 use common::api::{
-    ingest, ingest_ok, ingest_with, now_us, search, search_body, sent, sent_element,
+    counter_window, create_stream, ingest, ingest_ok, ingest_with, now_us, poll, search,
+    search_body, search_resp, sent, sent_element, settle_minute,
 };
+use common::authz::{self, ServiceToken, ingest_as, token_entry};
 use common::{BEARER, Fixture};
 
 // ---------------------------------------------------------------------------
@@ -323,4 +327,113 @@ fn ingest_append_only() {
         search(&server, "SELECT m FROM app WHERE m = 'dup'").len(),
         2
     );
+}
+
+// ---------------------------------------------------------------------------
+// 授权与来源限定（REQ-AMB-ING-JSON-ENDPOINT-V4）：授权文件与服务令牌由测试现场生成，令牌 X 所在条目的 `name` 取它的小写
+// ---------------------------------------------------------------------------
+
+/// 令牌 S（`writer`，范围 [`app_*`]，`sources` 为 `sources`）。
+fn source_restricted(fx: &Fixture, s: &ServiceToken, sources: &str) -> common::Server {
+    authz::start(
+        fx,
+        &[authz::entry(
+            "s",
+            &[&s.hash],
+            r#"[{ role = "writer", streams = ["app_*"] }]"#,
+            &format!("sources = {sources}"),
+        )],
+        &[],
+    )
+}
+
+/// 以 `auth.token` 查询 `stream` 时 `stream_not_found`（数据集不存在）。
+fn assert_not_created(server: &common::Server, stream: &str) {
+    search_resp(server, &format!("SELECT count(*) AS n FROM {stream}"))
+        .assert_envelope(400, "stream_not_found");
+}
+
+#[test]
+fn json_source_restricted_missing_header_403() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1"]"#);
+    ingest_as(&server, &s.bearer(), "app_new", &[], r#"[{"a":1}]"#)
+        .assert_envelope(403, "forbidden");
+    assert_not_created(&server, "app_new");
+}
+
+#[test]
+fn json_source_list_bytewise_before_format() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1"]"#);
+    ingest_ok(&server, "app_a", r#"[{"m":"seed"}]"#);
+    let body = r#"[{"m":"src-x"}]"#;
+    for headers in [
+        vec![(SOURCE, "FW-1")],
+        vec![(SOURCE, "-fw")],
+        vec![(SOURCE, "fw-1"), (SOURCE, "fw-2")],
+    ] {
+        ingest_as(&server, &s.bearer(), "app_a", &headers, body).assert_envelope(403, "forbidden");
+    }
+    assert!(search(&server, "SELECT m FROM app_a WHERE m = 'src-x'").is_empty());
+}
+
+#[test]
+fn json_source_listed_accepted() {
+    let fx = Fixture::new();
+    let s = ServiceToken::generate();
+    let server = source_restricted(&fx, &s, r#"["fw-1", "fw-2"]"#);
+    create_stream(&server, "app_a");
+    let w = settle_minute(Duration::from_secs(10), false);
+    let r = ingest_as(
+        &server,
+        &s.bearer(),
+        "app_a",
+        &[(SOURCE, "fw-2")],
+        r#"[{"a":1},{"a":2}]"#,
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["status"][0]["successful"], 2);
+    let (entry, ok) = poll(
+        Duration::from_secs(60),
+        || counter_window(&fx, "app_a", w),
+        |e| {
+            e.as_ref()
+                .is_some_and(|e| e["by_source"]["fw-2"]["durable"] == 2)
+        },
+    );
+    assert!(ok, "{entry:?}");
+}
+
+#[test]
+fn json_out_of_scope_not_created() {
+    let fx = Fixture::new();
+    let w = ServiceToken::generate();
+    let server = authz::start(
+        &fx,
+        &[token_entry(
+            "w",
+            &w,
+            r#"[{ role = "writer", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    ingest_ok(&server, "app_a", r#"[{"m":"seed"}]"#);
+    ingest_ok(&server, "hr", r#"[{"m":"seed"}]"#);
+    for stream in ["hr", "hr_new"] {
+        ingest_as(
+            &server,
+            &w.bearer(),
+            stream,
+            &[(SOURCE, "app_a")],
+            r#"[{"m":"w-x"}]"#,
+        )
+        .assert_envelope(403, "forbidden");
+    }
+    for stream in ["hr", "app_a"] {
+        assert!(search(&server, &format!("SELECT m FROM {stream} WHERE m = 'w-x'")).is_empty());
+    }
+    assert_not_created(&server, "hr_new");
 }

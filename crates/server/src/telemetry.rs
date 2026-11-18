@@ -31,6 +31,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
 use crate::alerting::metrics::AlertCounters;
+use crate::authz::AuthCounters;
 use crate::gateway::ApiError;
 use crate::logging::{self, Level};
 use crate::version;
@@ -850,6 +851,33 @@ fn render_reconciliation(out: &mut String, background: &Background, registry: &D
     }
 }
 
+/// `amberlog_auth_denied_total{status}` 与 `amberlog_authz_reload_failures_total`（稳定，REQ-AMB-OBS-HEALTH-METRICS-V7）：
+/// 写入实例与只读目录模式都自开始响应 `/metrics` 起输出，尚未发生时为 0，不以是否配置授权文件为条件。
+fn render_auth(out: &mut String, counters: &AuthCounters) {
+    let _ = writeln!(
+        out,
+        "# HELP amberlog_auth_denied_total Requests in the authentication zone answered with 401 or 403, by status code."
+    );
+    let _ = writeln!(out, "# TYPE amberlog_auth_denied_total counter");
+    for status in [401, 403] {
+        let _ = writeln!(
+            out,
+            "amberlog_auth_denied_total{{status=\"{status}\"}} {}",
+            counters.denied(status)
+        );
+    }
+    let _ = writeln!(
+        out,
+        "# HELP amberlog_authz_reload_failures_total Authorization file reloads that read invalid content."
+    );
+    let _ = writeln!(out, "# TYPE amberlog_authz_reload_failures_total counter");
+    let _ = writeln!(
+        out,
+        "amberlog_authz_reload_failures_total {}",
+        counters.reload_failures()
+    );
+}
+
 /// 标签值转义：反斜杠、双引号、换行。
 fn escape(v: &str) -> String {
     v.replace('\\', "\\\\")
@@ -857,9 +885,36 @@ fn escape(v: &str) -> String {
         .replace('\n', "\\n")
 }
 
-pub async fn metrics(State(state): State<crate::gateway::AppState>) -> Response {
+/// `amberlog_oidc_fetch_failures_total`：取身份平台说明文档或公钥集失败的次数
+/// （REQ-AMB-AUTH-OIDC-FETCH-FAILURE-METRIC）。
+fn render_oidc(out: &mut String, failures: u64) {
+    let _ = writeln!(
+        out,
+        "# HELP amberlog_oidc_fetch_failures_total Failed fetches of the identity provider's discovery document or key set."
+    );
+    let _ = writeln!(out, "# TYPE amberlog_oidc_fetch_failures_total counter");
+    let _ = writeln!(out, "amberlog_oidc_fetch_failures_total {failures}");
+}
+
+/// `GET /metrics`：只允许有指标读者角色的主体（REQ-AMB-AUTH-AUTHZ-MATRIX-METRICS）。路由只注册 `GET`，方法不符先得 405，
+/// 授权在方法匹配之后（REQ-AMB-AUTH-AUTHZ-STEP-PATH）；输出全部序列，不按主体的范围过滤（-METRICS-ALL-SERIES）。
+pub async fn metrics(
+    State(state): State<crate::gateway::AppState>,
+    access: crate::authz::Access,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if access.path_step(None, &headers).is_err() {
+        return crate::gateway::ApiError::forbidden().into_response();
+    }
     let ready = state.health.evaluate().ready();
-    let mut res = state.metrics.render(ready).into_response();
+    let mut text = state.metrics.render(ready);
+    render_auth(&mut text, state.authz.counters());
+    // 不以是否配置身份平台为条件，尚未失败时为 0（REQ-AMB-OBS-HEALTH-METRICS-V7）
+    render_oidc(
+        &mut text,
+        state.authz.idp().map_or(0, |i| i.fetch_failures()),
+    );
+    let mut res = text.into_response();
     res.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
@@ -898,6 +953,17 @@ mod tests {
             "amberlog_manifest_commits_total{org=\"default\",stream=\"m\",result=\"failed\"} 0"
         ));
         assert!(text.contains("amberlog_ready 1\n"));
+    }
+
+    #[test]
+    fn auth_counters_zero_at_start() {
+        let mut text = String::new();
+        render_auth(&mut text, &AuthCounters::default());
+        assert!(text.contains("# TYPE amberlog_auth_denied_total counter\n"));
+        assert!(text.contains("amberlog_auth_denied_total{status=\"401\"} 0\n"));
+        assert!(text.contains("amberlog_auth_denied_total{status=\"403\"} 0\n"));
+        assert!(text.contains("# TYPE amberlog_authz_reload_failures_total counter\n"));
+        assert!(text.contains("amberlog_authz_reload_failures_total 0\n"));
     }
 
     #[test]

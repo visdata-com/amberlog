@@ -33,6 +33,15 @@ impl QueryError {
         }
     }
 
+    /// 数据集 `stream` 不存在：400 `stream_not_found`。主体范围外的数据集也以它作答，应答须与不存在时逐字节相同
+    /// （REQ-AMB-AUTH-AUTHZ-HIDE-READ-SCOPE），所以说明只在这里写一处。
+    pub fn stream_not_found(stream: &str) -> Self {
+        Self::new(
+            Reason::StreamNotFound,
+            format!("stream `{stream}` does not exist"),
+        )
+    }
+
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(Reason::InvalidRequest, message)
     }

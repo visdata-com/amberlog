@@ -2,9 +2,10 @@
 //!
 //! 错误信封、`reason` 与校验链见 REQ-AMB-ERR-ENVELOPE。
 //! 校验链自外向内：`x-request-id` → 错误响应改写 → 目录前缀下的目录错误体与计数 → 停机闸门与认证 → 接住 panic
-//! → 路由与方法匹配 → 各端点。目录前缀 `/iceberg/` 下的路由与方法匹配由目录投影自己完成（[`crate::catalog`]，REQ-AMB-STO-COLD-CATALOG）。
+//! → 路由与方法匹配 → 权限矩阵的登记（[`crate::authz::matrix`]）→ 各端点（授权的路径一步与请求体一步由端点调用 [`crate::authz`]）。目录前缀 `/iceberg/` 下的路由与方法匹配由目录投影自己完成（[`crate::catalog`]，REQ-AMB-STO-COLD-CATALOG）。
 
 mod auth;
+pub mod conn;
 mod envelope;
 mod recover;
 mod request_id;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::middleware;
 
-use crate::config::Auth;
+use crate::authz::Authz;
 use crate::telemetry::{self, Health, Metrics};
 
 pub use envelope::ApiError;
@@ -29,7 +30,8 @@ pub use routing::{Endpoint, finish};
 pub struct AppState {
     pub health: Arc<Health>,
     pub metrics: Arc<Metrics>,
-    pub auth: Arc<Auth>,
+    /// 认证与授权的设置（`auth.enabled`、`auth.token`、授权文件的当前内容、`log.access`）。
+    pub authz: Arc<Authz>,
 }
 
 /// 装配全部对外端点：接入面自己的 `/healthz`、`/readyz`、`/metrics`、检索界面的 `/ui`，加上各模块的路由表 `modules`。
@@ -57,10 +59,14 @@ fn assemble(state: AppState, ui: bool, modules: Vec<Router>) -> Router {
         .with_state(state.clone());
     if ui {
         routes = routes.merge(crate::ui::router());
+        // 界面登录的三个登录路径（REQ-AMB-AUTH-OIDC C 组）；没配界面登录时为空表
+        routes = routes.merge(crate::ui::oidc::router(&state.authz));
     }
     for module in modules {
         routes = routes.merge(module);
     }
+    // 认证区内匹配到的路由须在权限矩阵登记（REQ-AMB-AUTH-AUTHZ-MATRIX-CLOSED），端点种类随之回填
+    let routes = routes.route_layer(middleware::from_fn(crate::authz::matrix::registered));
     let routes = routing::recovering(routes)
         .layer(middleware::from_fn_with_state(state.clone(), auth::gate))
         .layer(middleware::from_fn_with_state(

@@ -614,13 +614,13 @@ impl ColdReader for StoreCold {
         file: &'a ColdDataFile,
         target: SchemaRef,
         time: Range<i64>,
-    ) -> BoxFuture<'a, Result<ColdBatches, ColdReadError>> {
+    ) -> BoxFuture<'a, Result<Option<ColdBatches>, ColdReadError>> {
         Box::pin(async move {
             let c = &self.committer;
             let batches = read::read_file(&c.store, &c.layout, dataset, &file.path, target, time)
                 .await
                 .map_err(read_error)?;
-            Ok(Box::new(batches.map(|b| b.map_err(read_error))) as ColdBatches)
+            Ok(batches.map(|b| Box::new(b.map(|b| b.map_err(read_error))) as ColdBatches))
         })
     }
 }

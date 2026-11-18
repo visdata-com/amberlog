@@ -2158,10 +2158,17 @@ fn cfg_reconciliation_missing_not_filtered() {
     assert!(e["window_start"].is_i64() && e["missing"].is_u64(), "{e}");
 }
 
+/// 长时场景：转为上报中断要求最晚一个有发送数的窗口结束加 60 秒加宽限期晚于基线时刻，场景的
+/// W2 是此前第 4 分钟，实例要先运行 5 分钟。设了 `TESTBED_SOAK_HOURS` 时照场景跑满；缺省跑缩短版：实例运行 2 分钟。
 #[test]
 fn cfg_source_silent_not_filtered() {
     use common::missed::{events, minute_ago, report};
-    let i = error_level_instance(Duration::from_secs(120));
+    let warm = if std::env::var_os("TESTBED_SOAK_HOURS").is_some() {
+        Duration::from_secs(5 * 60)
+    } else {
+        Duration::from_secs(120)
+    };
+    let i = error_level_instance(warm);
     let (w1, w2) = (minute_ago(5), minute_ago(4));
     report(&i.server, "app", "fw-1", w1, 0);
     report(&i.server, "app", "fw-1", w2, 0);
@@ -2176,7 +2183,7 @@ fn cfg_source_silent_not_filtered() {
 }
 
 /// 启动时把可同时打开的文件数的软上限调到硬上限，并在日志里报出生效值；生效值低于 65536 时另有一行 warn
-/// （REQ-AMB-CFG-STARTUP-V9）。
+/// （REQ-AMB-CFG-STARTUP-V10）。
 #[test]
 fn cfg_open_file_limit_raised_to_hard() {
     let host_hard = common::open_file_limits(std::process::id()).1;
@@ -2203,5 +2210,768 @@ fn cfg_open_file_limit_raised_to_hard() {
             l["level"] == "warn" && l["msg"].as_str().is_some_and(|m| m.contains("LimitNOFILE"))
         });
         assert_eq!(warned, low, "{lines:#?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 授权文件与访问事件的配置项（REQ-AMB-CFG-STARTUP-V10）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cfg_authz_file_without_auth_token() {
+    let f = Fixture::new();
+    let d = empty_dir(&f, "d");
+    let q = common::authz::ServiceToken::generate();
+    let a = common::authz::write(
+        &f,
+        &[common::authz::token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["*"] }]"#,
+        )],
+    );
+    let cfg = raw_config(
+        &f,
+        "authz.toml.cfg",
+        &[
+            ("object_store.url", format!("\"file://{}\"", d.display())),
+            ("wal.dir", quoted(&empty_dir(&f, "w"))),
+            ("server.http_addr", "\"127.0.0.1:0\"".into()),
+            ("auth.authz_file", quoted(&a)),
+        ],
+    );
+    for sub in ["serve", "catalog"] {
+        let mut cmd = amberlog(f.root());
+        cmd.arg(sub).arg("--config").arg(&cfg);
+        let s = Server::start(cmd);
+        assert_eq!(
+            s.wait_readyz(200, Duration::from_secs(60)).status,
+            200,
+            "{sub}"
+        );
+        assert!(
+            !s.stderr_lines().iter().any(|l| l.contains("auth.token")),
+            "{sub}: {:#?}",
+            s.stderr_lines()
+        );
+        if sub == "serve" {
+            let r = common::authz::search_as(&s, &q.bearer(), "SELECT count(*) AS n FROM _ledger");
+            assert_eq!(r.status, 200, "{}", r.text());
+        }
+    }
+}
+
+#[test]
+fn cfg_auth_token_or_authz_file_missing_exit2() {
+    let f = Fixture::new();
+    let d = empty_dir(&f, "d");
+    let cfg = raw_config(
+        &f,
+        "none.toml",
+        &[
+            ("object_store.url", format!("\"file://{}\"", d.display())),
+            ("wal.dir", quoted(&empty_dir(&f, "w"))),
+            ("server.http_addr", "\"127.0.0.1:0\"".into()),
+        ],
+    );
+    for sub in ["serve", "catalog"] {
+        let r = run(amberlog(f.root()).arg(sub).arg("--config").arg(&cfg));
+        assert_eq!(r.code, 2, "{sub}: {}", r.stderr);
+        assert!(
+            r.stderr
+                .lines()
+                .any(|l| l.contains("auth.token") && l.contains("auth.authz_file")),
+            "{sub}: {}",
+            r.stderr
+        );
+        assert!(
+            !r.stderr.contains("\"event\":\"starting\""),
+            "{sub}: {}",
+            r.stderr
+        );
+    }
+}
+
+#[test]
+fn cfg_catalog_authz_file_invalid_exit2() {
+    let f = Fixture::new();
+    let a1 = common::authz::write_text(
+        &f,
+        "format_version = 1\n[[tokens]]\nname = \"x\"\nhashes = [\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"]\ngrants = [{ role = \"superuser\", streams = [\"app\"] }]\n",
+    );
+    let a2 = f.root().join("no-such-authz.toml");
+    for a in [&a1, &a2] {
+        let port = HeldPort::new();
+        let addr = port.addr();
+        let file = quoted(a);
+        let mut overrides = CATALOG_MINIMAL.to_vec();
+        overrides.extend_from_slice(&[
+            ("auth.token", None),
+            ("auth.authz_file", Some(file.as_str())),
+            ("server.http_addr", Some(addr.as_str())),
+        ]);
+        let r = run(&mut f.catalog(&overrides));
+        assert_exit(&r, 2, &[&a.display().to_string()]);
+        assert!(!r.stderr.contains("\"event\":\"starting\""), "{}", r.stderr);
+        assert!(!r.stderr.contains("cannot listen on"), "{}", r.stderr);
+    }
+}
+
+#[test]
+fn cfg_offline_ignores_authz_file() {
+    let f = Fixture::new();
+    app_committed(&f);
+    let missing = quoted(&f.root().join("no-such-authz.toml"));
+    for (n, value, code) in [(1, missing.as_str(), 0), (2, "1", 2)] {
+        let cfg = raw_config(
+            &f,
+            &format!("offline{n}.toml"),
+            &[
+                ("object_store.url", format!("\"{}\"", f.store_url())),
+                ("auth.authz_file", value.to_owned()),
+            ],
+        );
+        let r = run(&mut export_cmd(&f, &cfg, &format!("e{n}.tar")));
+        assert_eq!(r.code, code, "{n}: {}", r.stderr);
+        if code == 2 {
+            assert!(r.stderr.contains("auth.authz_file"), "{}", r.stderr);
+        }
+    }
+}
+
+#[test]
+fn cfg_log_access_values_exit2() {
+    let f = Fixture::new();
+    for value in ["\"writes\"", "\"READS\"", "1"] {
+        let r = run(&mut f.serve(&[("log.access", Some(value))]));
+        assert_exit(&r, 2, &["log.access"]);
+        assert!(
+            !r.stderr.contains("\"event\":\"starting\""),
+            "{value}: {}",
+            r.stderr
+        );
+    }
+    let mut cmd = f.serve(&[]);
+    cmd.env("AMBERLOG_LOG__ACCESS", "all");
+    let s = Server::start(cmd);
+    assert_eq!(s.wait_readyz(200, Duration::from_secs(60)).status, 200);
+}
+
+// ---------------------------------------------------------------------------
+// 工具子命令 `token new`（REQ-AMB-CFG-STARTUP-V10）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cfg_token_new_output() {
+    let f = Fixture::new();
+    std::fs::write(f.root().join("amberlog.toml"), "bogus_key = 1\n").unwrap();
+    let mut firsts = Vec::new();
+    for _ in 0..2 {
+        let r = run(amberlog(f.root())
+            .args(["token", "new"])
+            .env("AMBERLOG_NO_SUCH_KEY", "1")
+            .env("AMBERLOG_OBJECT_STORE__URL", "s3://bucket")
+            .env("AMBERLOG_OBJECT_STORE__S3__ENDPOINT", "http://127.0.0.1:1"));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert!(r.stderr.is_empty(), "{}", r.stderr);
+        let lines: Vec<&str> = r.stdout.split('\n').collect();
+        // 恰两行：两个换行结尾，末尾切出一个空串
+        assert_eq!(lines.len(), 3, "stdout 应恰为两行");
+        assert_eq!(lines[2], "");
+        let (token, hash) = (lines[0], lines[1]);
+        assert!(
+            token.len() == 47
+                && token.starts_with("amb_")
+                && token[4..]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "第一行不是服务令牌的格式"
+        );
+        assert!(
+            hash == common::authz::hash_line(token),
+            "第二行不是第一行的哈希行"
+        );
+        firsts.push(token.to_owned());
+    }
+    assert!(firsts[0] != firsts[1], "两次生成了同一个令牌");
+}
+
+#[test]
+fn cfg_token_subcommand_usage_exit2() {
+    let f = Fixture::new();
+    let cfg = f.write_config(&[]);
+    let cfg = cfg.to_str().unwrap();
+    for args in [
+        &["token"][..],
+        &["token", "old"],
+        &["token", "new", "--config", cfg],
+        &["token", "new", "extra"],
+    ] {
+        let r = run(amberlog(f.root()).args(args));
+        assert_eq!(r.code, 2, "{args:?}: {}", r.stderr);
+        assert!(!r.stderr.is_empty(), "{args:?}");
+        assert!(!r.stdout.lines().any(|l| l.starts_with("amb_")), "{args:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V9 稳定事件：`auth_disabled` 的 `authz_file_ignored`、`auth_token_short`、`authz_reload_failed`
+// ---------------------------------------------------------------------------
+
+const LOG_ERROR: Kv = ("log.level", Some("\"error\""));
+
+/// 运行日志里 `event` 为 `event` 的 JSON 行。
+fn events_in(s: &Server, event: &str) -> Vec<serde_json::Value> {
+    s.json_lines()
+        .into_iter()
+        .filter(|v| v["event"] == event)
+        .collect()
+}
+
+#[test]
+fn cfg_auth_disabled_authz_file_ignored() {
+    let f = Fixture::new();
+    let w = common::authz::ServiceToken::generate();
+    let a = common::authz::write(
+        &f,
+        &[common::authz::token_entry(
+            "w",
+            &w,
+            r#"[{ role = "writer", streams = ["app"] }]"#,
+        )],
+    );
+    let file = quoted(&a);
+    for (authz_file, ignored) in [(Some(file.as_str()), true), (None, false)] {
+        let s = f.start(&[
+            ("auth.enabled", Some("false")),
+            ("auth.token", None),
+            LOG_ERROR,
+            ("auth.authz_file", authz_file),
+        ]);
+        assert_eq!(s.wait_readyz(200, Duration::from_secs(60)).status, 200);
+        let evs = events_in(&s, "auth_disabled");
+        assert_eq!(evs.len(), 1, "{evs:#?}");
+        assert_eq!(evs[0]["level"], "warn");
+        assert_eq!(evs[0]["authz_file_ignored"], ignored);
+    }
+}
+
+#[test]
+fn cfg_auth_token_short_event() {
+    let f = Fixture::new();
+    let short = "\"0123456789abcdef\"";
+    for (overrides, want) in [
+        (vec![("auth.token", Some(short)), LOG_ERROR], true),
+        (
+            vec![
+                ("auth.token", Some("\"0123456789abcdef0123456789abcdef\"")),
+                LOG_ERROR,
+            ],
+            false,
+        ),
+        (
+            vec![
+                ("auth.token", Some(short)),
+                ("auth.enabled", Some("false")),
+                LOG_ERROR,
+            ],
+            false,
+        ),
+    ] {
+        let s = f.start(&overrides);
+        assert_eq!(s.wait_readyz(200, Duration::from_secs(60)).status, 200);
+        let lines = s.json_lines();
+        let at = |event: &str| lines.iter().position(|v| v["event"] == event);
+        let short_at: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v["event"] == "auth_token_short")
+            .map(|(i, _)| i)
+            .collect();
+        if !want {
+            assert!(
+                !s.stderr_lines()
+                    .iter()
+                    .any(|l| l.contains("auth_token_short")),
+                "{overrides:?}"
+            );
+            continue;
+        }
+        assert_eq!(short_at.len(), 1, "{lines:#?}");
+        let e = &lines[short_at[0]];
+        assert_eq!(e["level"], "warn");
+        assert_eq!(e["length"], 16);
+        assert_eq!(e["min_length"], 32);
+        let (starting, ready) = (at("starting").unwrap(), at("ready").unwrap());
+        assert!(starting < short_at[0] && short_at[0] < ready, "{lines:#?}");
+    }
+}
+
+#[test]
+fn cfg_authz_reload_failed_not_filtered() {
+    let f = Fixture::new();
+    let q = common::authz::ServiceToken::generate();
+    let entries = [common::authz::token_entry(
+        "q",
+        &q,
+        r#"[{ role = "querier", streams = ["*"] }]"#,
+    )];
+    let s = common::authz::start(&f, &entries, &[LOG_ERROR]);
+    let a = common::authz::write_text(
+        &f,
+        "format_version = 1\n[[tokens]]\nname = \"q\"\nhashes = []\ngrants = [{ role = \"superuser\" }]\n",
+    );
+    // 周期 60 秒，至多 70 秒生效
+    let deadline = Instant::now() + Duration::from_secs(75);
+    let e = loop {
+        if let Some(e) = events_in(&s, "authz_reload_failed").pop() {
+            break e;
+        }
+        assert!(Instant::now() < deadline, "{:#?}", s.stderr_lines());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(e["level"], "error");
+    assert!(e["authz_file"].is_string(), "{e}");
+    assert_eq!(e["authz_file"], a.display().to_string());
+}
+
+// ---------------------------------------------------------------------------
+// 请求头时限与只开 HTTP/1（REQ-AMB-CFG-STARTUP-V10）：原始 TCP 套接字，读到 EOF 或连接重置即为被关闭
+// ---------------------------------------------------------------------------
+
+/// 一直读到对端关闭（EOF 或连接重置），返回读到的字节与关闭的时刻；`limit` 内没关闭时失败。
+fn read_until_closed(sock: &mut std::net::TcpStream, limit: Duration) -> (Vec<u8>, Instant) {
+    use std::io::Read;
+    let deadline = Instant::now() + limit;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "连接在时限内没有被关闭，已读到 {} 字节",
+            got.len()
+        );
+        sock.set_read_timeout(Some(left)).unwrap();
+        match sock.read(&mut buf) {
+            Ok(0) => return (got, Instant::now()),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                return (got, Instant::now());
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => panic!("读连接出错：{e}"),
+        }
+    }
+}
+
+#[test]
+fn cfg_header_read_timeout_closes_connection() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let s = f.start(&[]);
+    let mut a = std::net::TcpStream::connect(s.addr).unwrap();
+    let opened = Instant::now();
+    a.write_all(b"GET /readyz HTT").unwrap();
+    std::thread::sleep(Duration::from_secs(10));
+    assert_eq!(s.get("/readyz").status, 200);
+    let (got, closed) = read_until_closed(&mut a, Duration::from_secs(40));
+    assert!(
+        got.is_empty(),
+        "收到了响应：{}",
+        String::from_utf8_lossy(&got)
+    );
+    assert!(
+        closed - opened <= Duration::from_secs(35),
+        "{:?}",
+        closed - opened
+    );
+}
+
+#[test]
+fn cfg_idle_connection_closed() {
+    use std::io::{Read, Write};
+    let f = Fixture::new();
+    let s = f.start(&[]);
+    let mut a = std::net::TcpStream::connect(s.addr).unwrap();
+    let a_opened = Instant::now();
+    let mut b = std::net::TcpStream::connect(s.addr).unwrap();
+    write!(b, "GET /readyz HTTP/1.1\r\nHost: {}\r\n\r\n", s.addr).unwrap();
+    // 收全 200 的响应（按 Content-Length），之后不再发送
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        b.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    let resp = common::parse_response(&head);
+    assert_eq!(resp.status, 200);
+    let len: usize = resp.header("content-length").unwrap().parse().unwrap();
+    let mut body = vec![0u8; len];
+    b.read_exact(&mut body).unwrap();
+    let b_done = Instant::now();
+
+    let (got, closed) = read_until_closed(&mut a, Duration::from_secs(40));
+    assert!(
+        got.is_empty(),
+        "甲收到了响应：{}",
+        String::from_utf8_lossy(&got)
+    );
+    assert!(
+        closed - a_opened <= Duration::from_secs(35),
+        "{:?}",
+        closed - a_opened
+    );
+    let (got, closed) = read_until_closed(&mut b, Duration::from_secs(40));
+    assert!(
+        got.is_empty(),
+        "乙在响应之后又收到了字节：{}",
+        String::from_utf8_lossy(&got)
+    );
+    assert!(
+        closed - b_done <= Duration::from_secs(35),
+        "{:?}",
+        closed - b_done
+    );
+}
+
+#[test]
+fn cfg_http2_prior_knowledge_rejected() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let s = f.start(&[]);
+    let mut a = std::net::TcpStream::connect(s.addr).unwrap();
+    // 连接序言、空的 SETTINGS 帧与一个 `GET /readyz` 的 HEADERS 帧（HPACK：:method GET、:scheme http 取静态表，
+    // :path 与 :authority 以静态表的名字加字面量取值）
+    let authority = s.addr.to_string();
+    let mut block = vec![0x82, 0x86, 0x04, 7];
+    block.extend_from_slice(b"/readyz");
+    block.push(0x01);
+    block.push(u8::try_from(authority.len()).unwrap());
+    block.extend_from_slice(authority.as_bytes());
+    let mut frames = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
+    frames.extend_from_slice(&[0, 0, 0, 0x04, 0, 0, 0, 0, 0]);
+    let len = u32::try_from(block.len()).unwrap().to_be_bytes();
+    frames.extend_from_slice(&[len[1], len[2], len[3], 0x01, 0x05, 0, 0, 0, 1]);
+    frames.extend_from_slice(&block);
+    a.write_all(&frames).unwrap();
+    let (got, _) = read_until_closed(&mut a, Duration::from_secs(40));
+    if !got.is_empty() {
+        // 不是 HTTP/2 帧，而是一个 HTTP/1.1 的无体错误响应
+        assert!(
+            got.starts_with(b"HTTP/1.1 "),
+            "{:?}",
+            String::from_utf8_lossy(&got)
+        );
+        let r = common::parse_response(&got);
+        assert!(r.status >= 400, "{r:?}");
+        assert!(r.body.is_empty(), "{r:?}");
+    }
+    assert_eq!(s.get("/readyz").status, 200);
+}
+
+#[test]
+fn cfg_access_events_not_filtered() {
+    let f = Fixture::new();
+    let (w, q) = (
+        common::authz::ServiceToken::generate(),
+        common::authz::ServiceToken::generate(),
+    );
+    let s = common::authz::start(
+        &f,
+        &[
+            common::authz::token_entry("w", &w, r#"[{ role = "writer", streams = ["app"] }]"#),
+            common::authz::token_entry("q", &q, r#"[{ role = "querier", streams = ["app"] }]"#),
+        ],
+        &[LOG_ERROR],
+    );
+    ingest_ok(&s, "app", r#"[{"a":1}]"#);
+    let sql = "SELECT count(*) AS n FROM app";
+    let first = common::authz::search_as(&s, &q.bearer(), sql);
+    assert_eq!(first.status, 200, "{}", first.text());
+    let second = common::authz::search_as(&s, &w.bearer(), sql);
+    assert_eq!(second.status, 403, "{}", second.text());
+    let id = |r: &common::Resp| r.header("x-request-id").unwrap().to_owned();
+    let (first_id, second_id) = (id(&first), id(&second));
+    let access = common::authz::wait_event(&s, "access", |e| e["request_id"] == first_id.as_str());
+    assert_eq!(access["level"], "info");
+    assert_eq!(access["principal"], "token:q");
+    assert_eq!(access["roles"], serde_json::json!(["querier"]));
+    assert_eq!(access["endpoint"], "search");
+    assert_eq!(access["method"], "POST");
+    assert_eq!(access["dataset"], "default/app");
+    assert_eq!(access["status"], 200);
+    let denied = common::authz::wait_event(&s, "access_denied", |e| {
+        e["request_id"] == second_id.as_str()
+    });
+    assert_eq!(denied["level"], "warn");
+    assert_eq!(denied["principal"], "token:w");
+    assert_eq!(denied["roles"], serde_json::json!(["writer"]));
+    assert_eq!(denied["endpoint"], "search");
+    assert_eq!(denied["method"], "POST");
+    assert_eq!(denied["dataset"], serde_json::Value::Null);
+    assert_eq!(denied["status"], 403);
+}
+
+// ---------- REQ-AMB-CFG-STARTUP-V10：代理环境变量、主配置只读一次、明文凭据、认证失败不锁定 ----------
+
+/// V10 场景里代理环境变量所指的代理：127.0.0.1 的 1 号端口上没有服务，经它的连接立即被拒。被测进程由
+/// [`common::amberlog`] 以空环境启动，环境里原本没有这四个变量及其小写写法，只有测试设的这几个。
+const DEAD_PROXY: &str = "http://127.0.0.1:1";
+
+/// 长 `n` 个字符的随机串（字母与数字），可作 `auth.token` 的取值（RFC 6750 的 b64token 写法）。
+fn random_text(n: usize) -> String {
+    use std::io::Read as _;
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut bytes = vec![0u8; n];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .expect("读 /dev/urandom");
+    bytes
+        .iter()
+        .map(|b| A[usize::from(*b) % A.len()] as char)
+        .collect()
+}
+
+/// 直连台架（不经本进程里的转发）的 `s3://` 配置：台架桶下本测试独有的路径，root 凭据，条件写取 `create_only`。
+fn direct_s3_config() -> Vec<(&'static str, Option<String>)> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    vec![
+        (
+            "object_store.url",
+            Some(format!(
+                "\"s3://{}/it-v10-{}-{nanos}\"",
+                testbed("TESTBED_S3_BUCKET"),
+                std::process::id()
+            )),
+        ),
+        (
+            "object_store.s3.endpoint",
+            Some(format!("\"{}\"", testbed("TESTBED_S3_ENDPOINT"))),
+        ),
+        (
+            "object_store.s3.access_key_id",
+            Some(format!("\"{}\"", testbed("TESTBED_S3_ACCESS_KEY_ID"))),
+        ),
+        (
+            "object_store.s3.secret_access_key",
+            Some(format!("\"{}\"", testbed("TESTBED_S3_SECRET_ACCESS_KEY"))),
+        ),
+        (
+            "object_store.s3.conditional_put",
+            Some("\"create_only\"".into()),
+        ),
+        ("object_store.s3.force_path_style", Some("true".into())),
+    ]
+}
+
+fn as_kv<'a>(owned: &'a [(&'a str, Option<String>)]) -> Vec<Kv<'a>> {
+    owned.iter().map(|(k, v)| (*k, v.as_deref())).collect()
+}
+
+#[test]
+fn cfg_object_store_follows_proxy_env() {
+    let endpoint = testbed("TESTBED_S3_ENDPOINT");
+    let host = endpoint
+        .strip_prefix("http://")
+        .expect("台架端点是 http://")
+        .split(['/', ':'])
+        .next()
+        .unwrap()
+        .to_owned();
+    let f = Fixture::new();
+    let owned = direct_s3_config();
+    let held = HeldPort::new();
+    let busy = held.addr();
+    let mut with_held = as_kv(&owned);
+    with_held.push(("server.http_addr", Some(busy.as_str())));
+    // 前两种环境：到对象存储的连接经代理，代理拒绝连接，启动的对象存储一步失败（退出码 3），没有走到监听
+    for proxy_env in [
+        &[("HTTP_PROXY", DEAD_PROXY), ("HTTPS_PROXY", DEAD_PROXY)][..],
+        &[("ALL_PROXY", DEAD_PROXY)][..],
+    ] {
+        let mut cmd = f.serve(&with_held);
+        cmd.envs(proxy_env.iter().copied());
+        let r = run(&mut cmd);
+        assert_exit(&r, 3, &[]);
+        assert!(
+            !r.stderr.contains("cannot listen on"),
+            "{proxy_env:?}：被测进程试图监听：\n{}",
+            r.stderr
+        );
+    }
+    // 第三种：目标主机在 NO_PROXY 里，直接连接
+    let mut cmd = f.serve(&as_kv(&owned));
+    cmd.env("HTTP_PROXY", DEAD_PROXY)
+        .env("HTTPS_PROXY", DEAD_PROXY)
+        .env("ALL_PROXY", DEAD_PROXY)
+        .env("NO_PROXY", &host);
+    let s = Server::start(cmd);
+    assert_eq!(s.wait_readyz(200, READY_WAIT).status, 200);
+}
+
+#[test]
+fn cfg_webhook_ignores_proxy_env() {
+    use common::alerting::{Clock, RuleToml, has_one, rules};
+    let rx = common::webhook::Receiver::http();
+    let f = Fixture::new();
+    let rule = RuleToml::new("r1", &rx.url("/hook")).without("window");
+    let value = rules(&[rule]);
+    let mut cmd = f.serve(&[("alerts.rules", Some(value.as_str()))]);
+    cmd.env("HTTP_PROXY", DEAD_PROXY)
+        .env("HTTPS_PROXY", DEAD_PROXY)
+        .env("ALL_PROXY", DEAD_PROXY);
+    let s = Server::start(cmd);
+    has_one(&s, Clock::REAL);
+    // 规则每分钟评估一次：至多等过一个整分加评估与投递的用时
+    let got = rx.wait_for(1, Duration::from_secs(180));
+    assert_eq!(got[0].method, "POST");
+    assert_eq!(got[0].json()["rule"], "r1", "{}", got[0].json());
+}
+
+#[test]
+fn cfg_main_config_read_once() {
+    let f = Fixture::new();
+    let (t1, t2) = (random_text(40), random_text(40));
+    let (b1, b2) = (format!("Bearer {t1}"), format!("Bearer {t2}"));
+    let config = f.write_config(&[("auth.token", Some(&format!("\"{t1}\"")))]);
+    let serve = || {
+        let mut c = amberlog(f.root());
+        c.arg("serve").arg("--config").arg(&config);
+        c
+    };
+    let metrics = |s: &Server, bearer: &str| {
+        s.request("GET", "/metrics", &[("Authorization", bearer)], b"")
+            .status
+    };
+    let mut s = Server::start(serve());
+    assert_eq!(s.wait_readyz(200, READY_WAIT).status, 200);
+    // 改写同一个配置文件，只改 auth.token；等过授权文件的 60 秒重读周期
+    std::fs::write(
+        &config,
+        f.toml(&[("auth.token", Some(&format!("\"{t2}\"")))]),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_secs(70));
+    assert_eq!(metrics(&s, &b1), 200, "改动之后、重启之前以 T1");
+    assert_eq!(metrics(&s, &b2), 401, "改动之后、重启之前以 T2");
+    s.signal("TERM");
+    assert_eq!(s.wait_exit(Duration::from_secs(30)), Some(Some(0)));
+    let s = Server::start(serve());
+    assert_eq!(s.wait_readyz(200, READY_WAIT).status, 200);
+    assert_eq!(metrics(&s, &b1), 401, "重启之后以 T1");
+    assert_eq!(metrics(&s, &b2), 200, "重启之后以 T2");
+}
+
+#[test]
+fn cfg_plaintext_credentials_not_logged() {
+    let f = Fixture::new();
+    let t = random_text(40);
+    let c = random_text(24);
+    let s_key = testbed("TESTBED_S3_SECRET_ACCESS_KEY");
+    let authz = common::authz::write(&f, &[]);
+    let authz = common::authz::authz_file_value(&authz);
+    let (t_toml, c_toml) = (format!("\"{t}\""), format!("\"{c}\""));
+    let mut owned = direct_s3_config();
+    owned.extend([
+        ("auth.token", Some(t_toml.clone())),
+        ("auth.authz_file", Some(authz)),
+        ("log.level", Some("\"trace\"".into())),
+        ("auth.oidc.issuer", Some("\"https://127.0.0.1:1\"".into())),
+        ("auth.oidc.audience", Some("\"amberlog\"".into())),
+        ("auth.oidc.client_id", Some("\"amberlog-ui\"".into())),
+        ("auth.oidc.client_secret", Some(c_toml)),
+    ]);
+    // 前提：三者两两不同，且都不是其余配置项取值的子串
+    let secrets = [("T", t.as_str()), ("S", s_key.as_str()), ("C", c.as_str())];
+    for (i, (n, a)) in secrets.iter().enumerate() {
+        for (m, b) in &secrets[i + 1..] {
+            assert_ne!(a, b, "{n} 与 {m} 相同");
+        }
+        for (k, v) in &owned {
+            let own = matches!(
+                *k,
+                "auth.token" | "object_store.s3.secret_access_key" | "auth.oidc.client_secret"
+            );
+            assert!(
+                own || !v.as_deref().unwrap_or_default().contains(a),
+                "{n} 是 {k} 取值的子串"
+            );
+        }
+    }
+    let mut stderrs = Vec::new();
+    // 合法配置：就绪后以 T 查询一次，再经 SIGTERM 停止
+    let mut s = Server::start(f.serve(&as_kv(&owned)));
+    assert_eq!(s.wait_readyz(200, READY_WAIT).status, 200);
+    let r = common::authz::search_as(
+        &s,
+        &format!("Bearer {t}"),
+        "SELECT count(*) AS n FROM _ledger",
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    s.signal("TERM");
+    assert_eq!(s.wait_exit(Duration::from_secs(30)), Some(Some(0)));
+    let stderr = s.stderr_lines().join("\n");
+    assert!(stderr.contains("\"event\":\"ready\""), "{stderr}");
+    stderrs.push(("合法配置".to_owned(), stderr));
+    // 三组不合法的配置，各以退出码 2 退出，stderr 指出键名
+    let spaced = format!("\"{t} \"");
+    for (change, key) in [
+        (
+            ("object_store.s3.access_key_id", None),
+            "object_store.s3.access_key_id",
+        ),
+        (("auth.oidc.client_id", None), "auth.oidc.client_id"),
+        (("auth.token", Some(spaced.as_str())), "auth.token"),
+    ] {
+        let mut kv = as_kv(&owned);
+        kv.push(change);
+        let r = run(&mut f.serve(&kv));
+        assert_exit(&r, 2, &[key]);
+        stderrs.push((format!("改 {key}"), r.stderr));
+    }
+    for (run_name, stderr) in &stderrs {
+        for (n, v) in secrets {
+            // 断言消息里不写取值本身
+            assert!(!stderr.contains(v), "{run_name}：stderr 含 {n} 的取值");
+        }
+    }
+}
+
+#[test]
+fn cfg_no_lockout_after_auth_failures() {
+    use common::authz::{ServiceToken, entry, search_as, write};
+    let f = Fixture::new();
+    let q = ServiceToken::generate();
+    let n = ServiceToken::generate();
+    let grants = r#"[{ role = "querier", streams = ["app"] }]"#;
+    let s = common::authz::start(&f, &[entry("q", &[&q.hash], grants, "")], &[]);
+    ingest_ok(&s, "app", r#"[{"a":1}]"#);
+    let sql = "SELECT count(*) AS n FROM app";
+    for i in 0..50 {
+        let r = search_as(&s, &n.bearer(), sql);
+        assert_eq!(r.status, 401, "以令牌 N 第 {} 次：{}", i + 1, r.text());
+    }
+    for i in 0..50 {
+        let r = search_as(&s, "Bearer s3creT", sql);
+        assert_eq!(r.status, 401, "以 s3creT 第 {} 次：{}", i + 1, r.text());
+    }
+    // 把 N 的哈希行加进 Q 所在条目（整体原子替换），等过 60 秒的重读周期
+    write(&f, &[entry("q", &[&q.hash, &n.hash], grants, "")]);
+    std::thread::sleep(Duration::from_secs(70));
+    for (who, bearer) in [
+        ("N", n.bearer()),
+        ("Q", q.bearer()),
+        ("s3cret", common::BEARER.to_owned()),
+    ] {
+        let r = search_as(&s, &bearer, sql);
+        assert_eq!(r.status, 200, "以 {who}：{}", r.text());
     }
 }

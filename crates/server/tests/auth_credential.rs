@@ -1,8 +1,9 @@
-//! REQ-AMB-AUTH-CREDENTIAL 的系统测试。
+//! REQ-AMB-AUTH-CREDENTIAL-V3 的系统测试。
 //!
 mod common;
 
 use common::api::{ingest_ok, minute_of, now_us, search_body, sent_element};
+use common::authz::{self, ServiceToken, get_as, search_as};
 use common::{BEARER, Fixture};
 
 /// 一条合法查询的请求体（查询端点落地前，认证失败的场景在路由之前就已作答）。
@@ -299,4 +300,108 @@ fn auth_catalog_disabled_exempt() {
     assert_ne!(config.status, 401);
     assert_ne!(namespaces.status, 401);
     assert_eq!(config.status, 200, "{}", config.text());
+}
+
+// ---------------------------------------------------------------------------
+// 有效凭据（REQ-AMB-AUTH-CREDENTIAL-V3）：授权文件与服务令牌由测试现场生成，断言里不写令牌原文
+// ---------------------------------------------------------------------------
+
+/// 令牌 `name` 的条目：`querier` 或 `writer`，范围为 `streams`（TOML 写法）。
+fn grant(role: &str, streams: &str) -> String {
+    format!(r#"[{{ role = "{role}", streams = {streams} }}]"#)
+}
+
+const COUNT_APP: &str = "SELECT count(*) AS n FROM app";
+
+#[test]
+fn auth_service_token_accepted() {
+    let f = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[authz::token_entry("q", &q, &grant("querier", r#"["app"]"#))],
+        &[],
+    );
+    ingest_ok(&s, "app", r#"[{"a":1}]"#);
+    assert_eq!(search_as(&s, &q.bearer(), COUNT_APP).status, 200);
+    assert_eq!(search_as(&s, BEARER, COUNT_APP).status, 200);
+}
+
+#[test]
+fn auth_expired_or_unknown_token_401() {
+    let f = Fixture::new();
+    let (q, x, n) = (
+        ServiceToken::generate(),
+        ServiceToken::generate(),
+        ServiceToken::generate(),
+    );
+    let s = authz::start(
+        &f,
+        &[
+            authz::token_entry("q", &q, &grant("querier", r#"["app"]"#)),
+            authz::entry(
+                "x",
+                &[&x.hash],
+                &grant("querier", r#"["app"]"#),
+                r#"expires_at = "2020-01-01T00:00:00Z""#,
+            ),
+        ],
+        &[],
+    );
+    ingest_ok(&s, "app", r#"[{"a":1}]"#);
+    let body = search_body(COUNT_APP);
+    let rs = [
+        s.request(
+            "POST",
+            "/api/default/_search",
+            &[("Content-Type", "application/json")],
+            body.as_bytes(),
+        ),
+        search_as(&s, &x.bearer(), COUNT_APP),
+        search_as(&s, &n.bearer(), COUNT_APP),
+    ];
+    let challenges: Vec<_> = rs
+        .iter()
+        .map(|r| {
+            r.assert_envelope(401, "unauthorized");
+            r.header("www-authenticate")
+                .expect("401 应带 WWW-Authenticate")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        challenges.iter().all(|c| *c == challenges[0]),
+        "{challenges:?}"
+    );
+    assert!(challenges[0].starts_with("Bearer"), "{challenges:?}");
+    assert_eq!(search_as(&s, &q.bearer(), COUNT_APP).status, 200);
+}
+
+#[test]
+fn auth_valid_without_permission_403() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[authz::token_entry(
+            "w",
+            &w,
+            &grant("writer", r#"["app_*"]"#),
+        )],
+        &[],
+    );
+    ingest_ok(&s, "app_a", r#"[{"a":1}]"#);
+    let search = search_as(&s, &w.bearer(), "SELECT count(*) AS n FROM app_a");
+    let metrics = get_as(&s, &w.bearer(), "/metrics");
+    let config = get_as(&s, &w.bearer(), "/iceberg/v1/config");
+    for r in [&search, &metrics, &config] {
+        assert_eq!(r.status, 403, "{r:?}");
+        assert_eq!(
+            r.header("www-authenticate"),
+            Some(r#"Bearer error="insufficient_scope""#)
+        );
+    }
+    search.assert_envelope(403, "forbidden");
+    metrics.assert_envelope(403, "forbidden");
+    assert_eq!(catalog_reason(&config), "forbidden");
 }

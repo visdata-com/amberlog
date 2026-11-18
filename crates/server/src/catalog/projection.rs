@@ -68,11 +68,17 @@ impl Projection {
             .0)
     }
 
-    /// 命名空间 `org` 之下存在的表，按名字字节序升序（REQ-AMB-STO-COLD-CATALOG-LIST-TABLES）。`first` 为真时找到一张即停
-    /// （只判定命名空间是否存在，NS-EXISTS）。
-    pub async fn tables(&self, org: &str, first: bool) -> Result<Vec<String>, ReadError> {
+    /// 命名空间 `org` 之下对主体存在的表，按名字字节序升序（REQ-AMB-STO-COLD-CATALOG-V2-LIST-TABLES）。`first` 为真时找到
+    /// 一张即停（只判定命名空间是否存在，NS-EXISTS）。`in_scope` 为主体的目录范围：范围外的候选名先筛掉，不为它确定当前
+    /// 版本（SCOPE-NO-READ）。
+    pub async fn tables(
+        &self,
+        org: &str,
+        first: bool,
+        in_scope: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<Vec<String>, ReadError> {
         let mut names = self.children(Some(org)).await?;
-        names.retain(|n| is_valid_stream_name(n));
+        names.retain(|n| is_valid_stream_name(n) && in_scope(n));
         names.sort();
         let mut found = Vec::new();
         for stream in names {
@@ -86,20 +92,27 @@ impl Projection {
         Ok(found)
     }
 
-    /// 命名空间 `org` 是否存在（REQ-AMB-STO-COLD-CATALOG-NS-EXISTS）。
-    pub async fn namespace_exists(&self, org: &str) -> Result<bool, ReadError> {
-        Ok(!self.tables(org, true).await?.is_empty())
+    /// 命名空间 `org` 对主体是否存在（REQ-AMB-STO-COLD-CATALOG-V2-NS-EXISTS：其下有范围内的表）。
+    pub async fn namespace_exists(
+        &self,
+        org: &str,
+        in_scope: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<bool, ReadError> {
+        Ok(!self.tables(org, true, in_scope).await?.is_empty())
     }
 
-    /// 存在的命名空间，按名字字节序升序（REQ-AMB-STO-COLD-CATALOG-LIST-NS）：候选名取自 `_iceberg/` 之下的一级子前缀，
+    /// 对主体存在的命名空间，按名字字节序升序（REQ-AMB-STO-COLD-CATALOG-V2-LIST-NS）：候选名取自 `_iceberg/` 之下的一级子前缀，
     /// 只有 REQ-AMB-DM-NAMESPACE 接受的 org 才可能存在。
-    pub async fn namespaces(&self) -> Result<Vec<String>, ReadError> {
+    pub async fn namespaces(
+        &self,
+        in_scope: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<Vec<String>, ReadError> {
         let mut names = self.children(None).await?;
         names.retain(|n| n == DEFAULT_ORG);
         names.sort();
         let mut found = Vec::new();
         for org in names {
-            if self.namespace_exists(&org).await? {
+            if self.namespace_exists(&org, in_scope).await? {
                 found.push(org);
             }
         }

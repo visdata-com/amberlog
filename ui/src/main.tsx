@@ -1,15 +1,9 @@
 import { render } from "preact";
-import { LocationProvider, useLocation } from "preact-iso";
+import { LocationProvider } from "preact-iso";
 import { App, applyTheme } from "./app.tsx";
+import { loadLoginConfig } from "./shell/login.ts";
 import { settings } from "./shell/settings.ts";
-import { NotFoundPage } from "./shell/NotFoundPage.tsx";
-import { isKnownPath } from "./shell/routes.ts";
 import "./style.css";
-
-function RoutedApp() {
-  const { path } = useLocation();
-  return isKnownPath(path) ? <App /> : <NotFoundPage />;
-}
 
 // 外观随设置同步换上（不等组件重画）
 let theme = settings.get().theme;
@@ -20,9 +14,11 @@ settings.subscribe(() => {
     applyTheme(theme);
   }
 });
+// 取一次登录配置（REQ-AMB-UI-CONSOLE-V3-LOGIN-CONFIG-REQUEST），先于各屏的数据请求发出
+loadLoginConfig();
 render(
   <LocationProvider scope="/ui">
-    <RoutedApp />
+    <App />
   </LocationProvider>,
   document.getElementById("app") as HTMLElement,
 );

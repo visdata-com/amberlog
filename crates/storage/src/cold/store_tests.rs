@@ -733,6 +733,7 @@ async fn lake_rewrite_keeps_all_records_sorted_with_digests() {
     )
     .await
     .unwrap()
+    .expect("有要读的行组")
     .collect::<Result<Vec<_>, _>>()
     .unwrap();
     let all = arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap();
@@ -751,6 +752,73 @@ async fn lake_rewrite_keeps_all_records_sorted_with_digests() {
     let n = all.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
     assert_eq!(n.iter().collect::<Vec<_>>(), [None, Some(30), None]);
     assert_eq!(all.column(3).null_count(), 3);
+}
+
+/// 冷层数据文件的 `_timestamp` 上下界与查询范围相交、但每个行组的上下界都不相交时，`read_file` 不读任何行组，回
+/// `None`（REQ-AMB-QRY-SEARCH-ENDPOINT-V10 所称不被扫描，REQ-AMB-QRY-CROSS-TIER-V2 冷层同此）。
+#[tokio::test]
+async fn read_file_without_row_groups_in_range_reads_none() {
+    let f = fixture(8);
+    let hot = StreamColumns::from_columns(hot_schema());
+    let fields = vec![
+        hot.get(TIMESTAMP_COLUMN).unwrap().arrow_field(),
+        hot.get("n").unwrap().arrow_field(),
+    ];
+    let schema = Arc::new(ArrowSchema::new(fields));
+    // 两个行组：`_timestamp` 依次为 T、T + 1 与 T + 100、T + 101，之间留空档
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![T, T + 1, T + 100, T + 101])
+                    .with_timezone("UTC"),
+            ),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+        ],
+    )
+    .unwrap();
+    let props = parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_row_count(Some(2))
+        .build();
+    let mut buf = Vec::new();
+    let mut w = parquet::arrow::ArrowWriter::try_new(&mut buf, schema, Some(props)).unwrap();
+    w.write(&batch).unwrap();
+    w.close().unwrap();
+    let path = "data/_timestamp_day=2026-08-22/gap.parquet";
+    f.write(path, &buf);
+
+    let target = Arc::new(hot.arrow_schema());
+    let read = |time: std::ops::Range<i64>| {
+        super::read::read_file(
+            &f.committer.store,
+            &f.committer.layout,
+            &f.dataset,
+            path,
+            Arc::clone(&target),
+            time,
+        )
+    };
+    assert!(
+        read(T + 50..T + 60).await.unwrap().is_none(),
+        "查询范围落在两个行组之间的空档里：不读任何行组"
+    );
+    let batches = read(T + 1..T + 2)
+        .await
+        .unwrap()
+        .expect("第一个行组与查询范围相交")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let ts: Vec<i64> = batches
+        .iter()
+        .flat_map(|b| {
+            let a = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>();
+            a.unwrap().values().to_vec()
+        })
+        .collect();
+    assert_eq!(ts, [T, T + 1], "只读第一个行组");
 }
 
 #[tokio::test]
@@ -1247,6 +1315,7 @@ async fn reader_splits_version_from_table_and_reports_missing_data_file() {
         .read_file(&f.dataset, &whole, entry, target, i64::MIN..i64::MAX)
         .await
         .unwrap()
+        .expect("有要读的行组")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);

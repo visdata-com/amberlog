@@ -1,4 +1,4 @@
-//! REQ-AMB-STO-COLD-COMPACTION 的系统测试：以子进程运行
+//! REQ-AMB-STO-COLD-COMPACTION-V2 的系统测试：以子进程运行
 //! `amberlog`，对象存储用 `file://` 临时目录；测试直接读冷层元数据 JSON、Avro 清单列表与清单（iceberg-rust 按 Iceberg 规范
 //! 解析，不经被测实现）、冷层 Parquet、热层快照与冷层变更段，核对 `_search` 的应答与 stderr 的 JSON 日志。
 //!
@@ -522,6 +522,52 @@ fn cold_compaction_all_candidates_one_merge() {
 }
 
 // ---------------------------------------------------------------------------
+// 合并候选文件之和超过目标大小时，合并输入有上限
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(feature = "fault-injection")]
+fn cold_compaction_cap_partial_merge() {
+    let c = Ctl::new();
+    c.hold("cold_compaction.before_run");
+    let s = c.start(&Run::base().raw("compaction.target_file_bytes", "1048576"));
+    const PER_HOUR: u64 = 2000;
+    for h in 1..=6 {
+        ingest_padded(
+            &s,
+            d_at(h, 0, 0),
+            (h as u64 - 1) * PER_HOUR + 1,
+            PER_HOUR,
+            200,
+        );
+    }
+    for h in 1..=6 {
+        let n = c.wait_laked(d_at(h, 0, 0)).1["size_bytes"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            n > 262_144 && n < 349_525,
+            "{h} 时的冷层数据文件有 {n} 字节，应在目标大小的四分之一与三分之一之间（调整每小时的条数）"
+        );
+    }
+    c.release_merge();
+    let segs = c.wait_merges(2, &s);
+    let first = segs.last().unwrap();
+    assert_eq!(compaction_paths(first).len(), 4, "{first}");
+    let prefix = format!("data/_timestamp_day={}/", d_name());
+    let cold = c.cold();
+    let mut seqs: Vec<i64> = c
+        .live()
+        .into_iter()
+        .filter(|p| p.starts_with(&prefix))
+        .flat_map(|p| ts_seq(&cold, &p))
+        .map(|(_, s)| s.unwrap())
+        .collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs, range(1, 6 * PER_HOUR as i64));
+}
+
+// ---------------------------------------------------------------------------
 // 文件摘要、合并记录与条数守恒
 // ---------------------------------------------------------------------------
 
@@ -1005,38 +1051,32 @@ fn ingest_padded(server: &Server, start: i64, first: u64, n: u64, len: usize) {
     assert_eq!(r.json()["status"][0]["successful"], n, "{}", r.text());
 }
 
-/// 「多个合并产出按时间顺序切分」的实例：以 `compaction.target_file_bytes` 为 1 MiB 启动，A 与 B 各含 3000 条带随机字符串
-/// `pad` 的记录（A、B 各小于 1 MiB，两者之和大于 1 MiB），等两个桶入湖完成。
-fn two_padded(c: &Ctl) -> (Server, Small) {
+/// 「多个合并产出按时间顺序切分」的实例：以 `compaction.target_file_bytes` 为 1 MiB 启动，A（D 日 01 时）、B（02:30）与
+/// C（03 时）各含 2600 条带 200 字节随机字符串 `pad` 的记录，等三个桶入湖完成。确认 A、B、C 各小于目标大小的一半，三者之和
+/// 大于目标大小且留有余量（合并产出之和仍大于目标大小），去掉最大的一个后之和不大于目标大小（按 -TRIGGER-CAP 三个全取）。
+fn three_padded(c: &Ctl) -> Server {
     c.hold("cold_compaction.before_run");
     let s = c.start(&Run::base().raw("compaction.target_file_bytes", "1048576"));
-    ingest_padded(&s, d_at(1, 0, 0), 1, 3000, 360);
-    ingest_padded(&s, d_at(2, 30, 0), 3001, 3000, 360);
-    let (a, a_entry) = c.wait_laked(d_at(1, 0, 0));
-    let (b, b_entry) = c.wait_laked(d_at(2, 30, 0));
-    for e in [&a_entry, &b_entry] {
-        assert!(e["size_bytes"].as_u64().unwrap() < 1_048_576, "{e}");
-    }
-    assert!(
-        a_entry["size_bytes"].as_u64().unwrap() + b_entry["size_bytes"].as_u64().unwrap()
-            > 1_048_576
-    );
-    (
-        s,
-        Small {
-            a,
-            b,
-            a_entry,
-            b_entry,
-        },
-    )
+    ingest_padded(&s, d_at(1, 0, 0), 1, 2600, 200);
+    ingest_padded(&s, d_at(2, 30, 0), 2601, 2600, 200);
+    ingest_padded(&s, d_at(3, 0, 0), 5201, 2600, 200);
+    let mut sizes: Vec<u64> = [d_at(1, 0, 0), d_at(2, 30, 0), d_at(3, 0, 0)]
+        .into_iter()
+        .map(|ts| c.wait_laked(ts).1["size_bytes"].as_u64().unwrap())
+        .collect();
+    sizes.sort_unstable();
+    assert!(sizes.iter().all(|&n| n < 524_288), "{sizes:?}（调整条数）");
+    let total: u64 = sizes.iter().sum();
+    assert!(total > 1_048_576 * 11 / 10, "{sizes:?}（调整条数）");
+    assert!(total - sizes[2] <= 1_048_576, "{sizes:?}（调整条数）");
+    s
 }
 
 #[test]
 #[cfg(feature = "fault-injection")]
 fn cold_compaction_sorted_across() {
     let c = Ctl::new();
-    let (s, _small) = two_padded(&c);
+    let s = three_padded(&c);
     c.release_merge();
     let seg = c.wait_merge(&s);
     let cold = c.cold();
@@ -1058,7 +1098,7 @@ fn cold_compaction_sorted_across() {
 #[cfg(feature = "fault-injection")]
 fn cold_compaction_output_size() {
     let c = Ctl::new();
-    let (s, _small) = two_padded(&c);
+    let s = three_padded(&c);
     c.release_merge();
     let seg = c.wait_merge(&s);
     let cold = c.cold();
@@ -1324,10 +1364,15 @@ fn cold_compaction_half_target_output_skipped() {
     let c = Ctl::new();
     c.hold("cold_compaction.before_run");
     let s = c.start(&Run::base().raw("compaction.target_file_bytes", "1048576"));
-    ingest_padded(&s, d_at(1, 0, 0), 1, 4000, 200);
-    ingest_seq(&s, d_at(2, 30, 0), 4001, 20, &|_| String::new());
-    c.wait_laked(d_at(1, 0, 0));
-    c.wait_laked(d_at(2, 30, 0));
+    ingest_padded(&s, d_at(1, 0, 0), 1, 2200, 200);
+    ingest_padded(&s, d_at(2, 30, 0), 2201, 2200, 200);
+    for ts in [d_at(1, 0, 0), d_at(2, 30, 0)] {
+        let n = c.wait_laked(ts).1["size_bytes"].as_u64().unwrap();
+        assert!(
+            n < 524_288,
+            "A、B 应各小于目标大小的一半，有 {n} 字节（调整条数）"
+        );
+    }
     c.release_merge();
     let first = c.wait_merge(&s);
     let o = addition_paths(&first);
@@ -1352,6 +1397,29 @@ fn cold_compaction_half_target_output_skipped() {
     assert_eq!(c.compactions().len(), 2);
     assert_eq!(compaction_paths(&segs[0]), sorted(vec![cc, e]));
     assert!(c.live().contains(&o[0]));
+}
+
+#[test]
+#[cfg(feature = "fault-injection")]
+fn cold_compaction_half_target_lake_file_skipped() {
+    let c = Ctl::new();
+    c.hold("cold_compaction.before_run");
+    let s = c.start(&Run::base().raw("compaction.target_file_bytes", "1048576"));
+    ingest_padded(&s, d_at(1, 0, 0), 1, 4000, 200);
+    ingest_seq(&s, d_at(2, 30, 0), 11, 20, &|_| String::new());
+    let (a, a_entry) = c.wait_laked(d_at(1, 0, 0));
+    let (b, _) = c.wait_laked(d_at(2, 30, 0));
+    let size = a_entry["size_bytes"].as_u64().unwrap();
+    assert!(
+        (524_288..1_048_576).contains(&size),
+        "A 有 {size} 字节，应在 [524288, 1048576) 内（调整 pad 的长度）"
+    );
+    ingest_seq(&s, d_at(3, 0, 0), 31, 10, &|_| String::new());
+    let (cc, _) = c.wait_laked(d_at(3, 0, 0));
+    c.release_merge();
+    let seg = c.wait_merge(&s);
+    assert_eq!(compaction_paths(&seg), sorted(vec![b, cc]));
+    assert!(c.live().contains(&a));
 }
 
 #[test]

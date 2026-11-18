@@ -1,6 +1,6 @@
 <!--
-Thanks for contributing. This repository is a snapshot, so pull requests are not merged here: the maintainers import the change into the development repository, release it with the next sync, then close the PR and say which release contains it. Authorship and sign-off are kept. See CONTRIBUTING.md.
-感谢贡献。本仓库是快照，PR 不在这里合并：维护者把它导入开发仓库，随下一次同步发布，然后关闭 PR 并说明发布到了哪个版本。作者和签名都会保留。详见 CONTRIBUTING.md。
+Thanks for contributing. The maintainers first import the change into the development repository and run its full checks there; when they pass, the maintainers set the `amberlog/internal-gate` status and merge the PR here. Authorship and sign-off are kept. See CONTRIBUTING.md.
+感谢贡献。维护者先把改动导入开发仓库，跑完整的检查；通过后写上 `amberlog/internal-gate` 状态，在这里合并 PR。作者和签名都会保留。详见 CONTRIBUTING.md。
 
 Chinese and English are both welcome. / 中文、英文都可以。
 -->

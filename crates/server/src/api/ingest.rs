@@ -1,8 +1,9 @@
 //! 摄取端点：`POST /api/{org}/{stream}/_json`（REQ-AMB-ING-JSON-ENDPOINT、REQ-AMB-ING-ACK-RESPONSE）与 `POST /api/{org}/{stream}/_sent`
 //! （REQ-AMB-OBS-INGEST-COUNTERS）。
 //!
-//! 两者只做 HTTP 一侧的适配，按 REQ-AMB-ERR-ENVELOPE-V5 校验链在停机闸门与认证（接入面）之后依次：
-//! `{org}` 与 `{stream}`（REQ-AMB-DM-NAMESPACE，[`super::namespace::dataset_from_path`] 按原始路径段判定）→ 目标数据集状态闸门 →
+//! 两者只做 HTTP 一侧的适配，按 REQ-AMB-ERR-ENVELOPE-V8 校验链在停机闸门与认证（接入面）之后依次：
+//! `{org}` 与 `{stream}`（REQ-AMB-DM-NAMESPACE，[`super::namespace::dataset_from_path`] 按原始路径段判定）→ 授权的路径一步
+//! （[`Access::path_step`]：写入者范围，`_json` 另有来源限定，REQ-AMB-AUTH-AUTHZ-STEP-PATH）→ 目标数据集状态闸门 →
 //! 来源标识（仅 `_json`，REQ-AMB-ING-JSON-ENDPOINT-V3 的 `X-Amberlog-Source`）→
 //! `Content-Encoding` 与请求体大小（[`super::body::read_body`]）→ 交摄取管道（`_json`：请求体解析、逐条判定、WAL、应答体；
 //! `_sent`：请求体与元素校验、WAL、计入治理计数）。`_sent` 不计摄取指标（REQ-AMB-OBS-HEALTH-METRICS），也不看来源标识请求头。
@@ -28,6 +29,7 @@ use serde_json::json;
 use super::body::read_body;
 use super::namespace::dataset_from_path;
 use super::{Settings, Storage};
+use crate::authz::Access;
 use crate::gateway::{ApiError, AppState, Endpoint};
 use crate::telemetry::Metrics;
 
@@ -84,16 +86,21 @@ pub fn json_routes(ingest: JsonIngest) -> Router {
 /// 来源标识请求头（REQ-AMB-ING-JSON-ENDPOINT-V3）。
 const SOURCE_HEADER: &str = "x-amberlog-source";
 
-/// 两个端点共用的请求级检查：路径段 → 数据集状态闸门 → 来源标识（`with_source` 时，即 `_json`）→
+/// 两个端点共用的请求级检查：路径段 → 授权的路径一步 → 数据集状态闸门 → 来源标识（`with_source` 时，即 `_json`）→
 /// `Content-Encoding` 与请求体大小。返回数据集、合法的来源标识（未带或不检查时为 `None`）与请求体。
 async fn admit(
     ingest: &JsonIngest,
+    access: &Access,
     uri: &Uri,
     headers: &HeaderMap,
     body: Body,
     with_source: bool,
 ) -> Result<(Dataset, Option<String>, Bytes), Box<Response>> {
     let dataset = dataset_from_path(uri.path()).map_err(|r| Box::new(r.into_response()))?;
+    // 写入只有 403 一种否决（REQ-AMB-AUTH-AUTHZ-DENY-WRITE-SCOPE、-SOURCE-RESTRICT-JSON）
+    if access.path_step(Some(&dataset), headers).is_err() {
+        return Err(Box::new(ApiError::forbidden().into_response()));
+    }
     if let Some(reason) = ingest.gates.state(&dataset).reason() {
         return Err(Box::new(match reason {
             Reason::Internal => ApiError::internal()
@@ -140,16 +147,25 @@ fn source_header(headers: &HeaderMap) -> Result<Option<String>, Box<Response>> {
 
 async fn report_sent(
     State(ingest): State<JsonIngest>,
+    access: Access,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
     let received_at_us = now_us();
-    let (dataset, _, bytes) = match admit(&ingest, &uri, &headers, body, false).await {
+    let (dataset, _, bytes) = match admit(&ingest, &access, &uri, &headers, body, false).await {
         Ok(v) => v,
         Err(r) => return *r,
     };
-    let response = match ingest.pipeline.report_sent(&dataset, &bytes).await {
+    let response = match ingest
+        .pipeline
+        .report_sent(&dataset, &bytes, |elements| {
+            access
+                .sent_sources(elements.iter().map(|e| e.source.as_str()))
+                .is_ok()
+        })
+        .await
+    {
         Ok(accepted) => {
             let timestamped = accepted
                 .iter()
@@ -166,6 +182,7 @@ async fn report_sent(
         Err(SentRejected::Invalid(SentError::InvalidRequest(why))) => {
             ApiError::new(Reason::InvalidRequest, why).into_response()
         }
+        Err(SentRejected::Refused) => ApiError::forbidden().into_response(),
         Err(SentRejected::Unavailable(cause)) => ApiError::new(
             Reason::Unavailable,
             "the report could not be made durable; it was not accepted and may be retried",
@@ -186,12 +203,13 @@ fn note_unavailable(ingest: &JsonIngest, dataset: &Dataset, response: &Response)
 
 async fn ingest_json(
     State(ingest): State<JsonIngest>,
+    access: Access,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
     let received_at_us = now_us();
-    let (dataset, source, bytes) = match admit(&ingest, &uri, &headers, body, true).await {
+    let (dataset, source, bytes) = match admit(&ingest, &access, &uri, &headers, body, true).await {
         Ok(v) => v,
         Err(r) => return *r,
     };

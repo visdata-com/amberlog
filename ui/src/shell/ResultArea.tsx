@@ -1,5 +1,5 @@
 // 某屏的结果区：慢查询的已用秒数与「取消」、出错时各条、取消提示、「时刻格式无效」、「无结果」与本页上限
-// （REQ-AMB-UI-CONSOLE 取值、慢查询与取消、出错时三组）。屏只管画表格。
+// （REQ-AMB-UI-CONSOLE-V4 取值、慢查询与取消、出错时三组；EMPTY 的「无结果」之下另有说明文字）。屏只管画表格。
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -22,12 +22,19 @@ function useTicking(on: boolean): number {
   return now;
 }
 
-function Lines({ lines }: { lines: string[] }) {
+/** 出错或提示的各行文字；`requestId` 非空时另起一行显示「请求编号」与它（ERR-REQUEST-ID，取值是可选中复制的文本）。 */
+function Lines({ lines, requestId = null }: { lines: string[]; requestId?: string | null }) {
   return (
     <div class="message" role="status">
       {lines.map((l) => (
         <p>{l}</p>
       ))}
+      {requestId !== null && (
+        <p class="request-id">
+          {"请求编号 "}
+          <span class="request-id-value">{requestId}</span>
+        </p>
+      )}
     </div>
   );
 }
@@ -63,7 +70,7 @@ export function ResultArea({ req, prefix, initial, emptyDescription, render, pla
       case "ok":
         if (plain) return render(view.hits, view.size, view.body);
         if (view.hits.length === 0) {
-          return <ResultState kind="empty" title="未找到匹配结果" description={emptyDescription} />;
+          return <ResultState kind="empty" title="无结果" description={emptyDescription} />;
         }
         return (
           <>
@@ -72,10 +79,11 @@ export function ResultArea({ req, prefix, initial, emptyDescription, render, pla
           </>
         );
       case "error":
-        return withKept(<Lines lines={view.lines} />, view.keep);
+        return withKept(<Lines lines={view.lines} requestId={view.requestId} />, view.keep);
       case "busy": {
         const left = Math.max(0, Math.ceil((view.until - now) / 1000));
-        return withKept(<Lines lines={left > 0 ? [TOO_MANY, left + " 秒"] : [TOO_MANY]} />, view.keep);
+        const lines = left > 0 ? [TOO_MANY, left + " 秒"] : [TOO_MANY];
+        return withKept(<Lines lines={lines} requestId={view.requestId} />, view.keep);
       }
       case "cancelled":
         return withKept(<Lines lines={[CANCELLED]} />, view.keep);

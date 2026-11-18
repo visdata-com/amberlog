@@ -1,14 +1,16 @@
-// 三屏共用的设置：所选时区、外观、访问口令与它们的提示（REQ-AMB-UI-CONSOLE 口令、时区、外观三组）。
+// 三屏共用的设置：所选时区、外观、访问口令与它们的提示（REQ-AMB-UI-CONSOLE-V3 口令、时区、外观三组）。
 
 import { createStore } from "../lib/store.ts";
+import { TOKEN_KEY } from "../lib/login.ts";
 import { browserTimeZone, timeZoneChoices } from "../lib/time.ts";
 
 export type Screen = "search" | "ledger" | "recon";
+/** 口令框旁的提示，任一时刻至多一种，后出现的取代先出现的（TOKEN-401、TOKEN-403，LOGIN-REAUTH）。 */
+export type TokenHint = "invalid" | "forbidden" | "loginStopped";
 export type Theme = "system" | "light" | "dark";
 
 const TZ_KEY = "amberlog.timezone";
 const THEME_KEY = "amberlog.theme";
-const TOKEN_KEY = "amberlog.token";
 
 // 存储不可用（隐私模式、被禁用）时照常工作，只是不记
 function load(storage: () => Storage, key: string): string | null {
@@ -46,8 +48,8 @@ export const settings = createStore({
   theme: initialTheme(),
   /** 访问口令（口令框的当前内容）；只存当前标签页的会话存储（TOKEN-STORAGE）。 */
   token: load(session, TOKEN_KEY) ?? "",
-  /** 数据请求得到 401 后为真，直到口令被修改（TOKEN-401）。 */
-  tokenInvalid: false,
+  /** 数据请求得到 401 或 403 后口令框旁的提示，直到口令被修改（TOKEN-401、TOKEN-403）；没有时为 null。 */
+  tokenHint: null as TokenHint | null,
   /** 数据请求的 400 指明 `query.timezone` 后为真，直到所选时区改变（TZ-UNKNOWN）。 */
   tzUnknown: false,
 });
@@ -80,11 +82,11 @@ export function confirmToken(): void {
   const { token } = settings.get();
   if (token === confirmedToken) return;
   confirmedToken = token;
-  settings.set({ tokenInvalid: false });
+  settings.set({ tokenHint: null });
   for (const f of [...confirmed]) f();
 }
 
-/** 口令被修改时调 `f`（检索屏的数据集候选查询在 401 后据此重发）。 */
+/** 口令被修改时调 `f`（检索屏的数据集候选查询在 401 后据此重发；口令不再算由登录换得）。 */
 export function onTokenConfirmed(f: () => void): () => void {
   confirmed.add(f);
   return () => confirmed.delete(f);

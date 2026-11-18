@@ -205,6 +205,8 @@ impl Compactor {
         snapshot: &Snapshot,
         inputs: Vec<FileEntry>,
     ) -> Result<(), Abort> {
+        // 合并输入已选定、尚未读取（REQ-AMB-STO-BACKGROUND-MEMORY 的「开始前的值」在此读）
+        fault::gate("compaction.after_select").await;
         let schema = &snapshot.schema;
         let store = &self.flusher.committer().chain().store;
         // 全部输入核对完毕、全部相符之后才写出输出
@@ -303,17 +305,70 @@ impl Compactor {
     }
 }
 
-/// 合并输入（REQ-AMB-STO-SEAL-COMPACTION-V4）：小文件（`size_bytes` 小于 `target` 的一半）按大小升序排成一列，从最小的
-/// 一个起逐个作起点，向后逐个累加到和超过 `target` 为止，其间记下最远的终点——终点处的文件不大于起点至它前一个之和的
-/// 2 倍，起点至终点即构成可合并的一组；取第一个找得到终点的起点。有相邻可合并组时一定找得到（它的和不大于 `target`，
-/// 从它的起点累加走得到它的终点）；全部小文件构成可合并的一组时取到的就是全部。找不到返回空。
+/// 合并输入（REQ-AMB-STO-SEAL-COMPACTION-V4）：取一组可合并的一组，优先取时间相邻的一组；找不到返回空。
 ///
-/// 每个起点至多累加到和超过 `target`：刚封口的桶有几百个 flush 文件时也只是几十万次加法。
+/// 1. 全部小文件（`size_bytes` 小于 `target` 的一半）构成可合并的一组时取全部（REQ-AMB-STO-SEAL-COMPACTION-V4 第 13 条）。
+/// 2. 否则取时间相邻的一组（[`select_by_time`]）：同一组的记录大多在同一段时间内收到，合并输出的 `_timestamp` 范围窄，
+///    按时间查询时剪得掉。第 14 条：除上一条外，选哪一组由实现决定。
+/// 3. 按时间找不到时按大小选（[`select_by_size`]）。有相邻可合并组时按大小一定找得到，第 12 条的时限因此不受选法影响。
 fn select(files: &[FileEntry], target: u64) -> Vec<FileEntry> {
-    let mut small: Vec<&FileEntry> = files
+    let small: Vec<&FileEntry> = files
         .iter()
         .filter(|f| f.size_bytes.saturating_mul(2) < target)
         .collect();
+    let sizes: Vec<u64> = small.iter().map(|f| f.size_bytes).collect();
+    if mergeable(&sizes, target) {
+        return small.into_iter().cloned().collect();
+    }
+    let by_time = select_by_time(small.clone(), target);
+    if !by_time.is_empty() {
+        return by_time;
+    }
+    select_by_size(small, target)
+}
+
+/// `sizes` 是否构成可合并的一组（REQ-AMB-STO-SEAL-COMPACTION-V4）：不少于 2 个，和不大于 `target`，最大的一个不大于
+/// 其余之和的 2 倍。
+fn mergeable(sizes: &[u64], target: u64) -> bool {
+    let sum = sizes.iter().fold(0u64, |a, &s| a.saturating_add(s));
+    let max = sizes.iter().copied().max().unwrap_or(0);
+    sizes.len() >= 2 && sum <= target && max <= (sum - max).saturating_mul(2)
+}
+
+/// 时间相邻的一组：小文件按 (`max_timestamp`, `path`) 从早到晚排成一列，从最早的一个起逐个作起点，向后逐个累加到和
+/// 超过 `target` 为止，其间记下最远的终点——起点至终点构成可合并的一组（按区间内最大的一个判，按时间排时终点不一定
+/// 最大）；取第一个找得到终点的起点。找不到返回空。
+///
+/// 按 `max_timestamp` 排而不按 `min_timestamp`：落盘文件的下界常被迟到记录拉到整点附近，上界跟着落盘的时刻走。
+fn select_by_time(mut small: Vec<&FileEntry>, target: u64) -> Vec<FileEntry> {
+    small.sort_by(|a, b| (a.max_timestamp, &a.path).cmp(&(b.max_timestamp, &b.path)));
+    for l in 0..small.len() {
+        let mut sum = small[l].size_bytes;
+        let mut max = sum;
+        let mut end = None;
+        for (r, f) in small.iter().enumerate().skip(l + 1) {
+            if sum.saturating_add(f.size_bytes) > target {
+                break;
+            }
+            sum += f.size_bytes;
+            max = max.max(f.size_bytes);
+            if max <= (sum - max).saturating_mul(2) {
+                end = Some(r);
+            }
+        }
+        if let Some(r) = end {
+            return small[l..=r].iter().map(|&f| f.clone()).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// 按大小选：小文件按大小升序排成一列，从最小的一个起逐个作起点，向后逐个累加到和超过 `target` 为止，其间记下最远的
+/// 终点——终点处的文件不大于起点至它前一个之和的 2 倍，起点至终点即构成可合并的一组；取第一个找得到终点的起点。
+/// 有相邻可合并组时一定找得到（它的和不大于 `target`，从它的起点累加走得到它的终点）。找不到返回空。
+///
+/// 每个起点至多累加到和超过 `target`：刚封口的桶有几百个 flush 文件时也只是几十万次加法。
+fn select_by_size(mut small: Vec<&FileEntry>, target: u64) -> Vec<FileEntry> {
     small.sort_by_key(|f| f.size_bytes);
     for l in 0..small.len() {
         let mut sum = small[l].size_bytes;
@@ -339,26 +394,48 @@ mod tests {
     use super::*;
     use crate::chain::SnapshotId;
 
-    /// `sizes` 各为一个文件（路径为其下标）时选中文件的大小，升序。
+    /// 一个文件：路径为 `i`，`max_timestamp` 为 `max_ts`。
+    fn file(i: usize, size_bytes: u64, max_ts: i64) -> FileEntry {
+        FileEntry {
+            path: format!("data/2026/08/22/10/{i:04}.parquet"),
+            min_timestamp: 1,
+            max_timestamp: max_ts,
+            record_count: 1,
+            size_bytes,
+            content_digest: Digest::of(&i.to_le_bytes()),
+            added_in: SnapshotId(1),
+            column_stats: None,
+        }
+    }
+
+    /// `sizes` 各为一个文件（路径为其下标，`max_timestamp` 相同）时选中文件的大小，升序。
     fn picked(sizes: &[u64], target: u64) -> Vec<u64> {
         let files: Vec<FileEntry> = sizes
             .iter()
             .enumerate()
-            .map(|(i, &size_bytes)| FileEntry {
-                path: format!("data/2026/08/22/10/{i}.parquet"),
-                min_timestamp: 1,
-                max_timestamp: 2,
-                record_count: 1,
-                size_bytes,
-                content_digest: Digest::of(&i.to_le_bytes()),
-                added_in: SnapshotId(1),
-                column_stats: None,
-            })
+            .map(|(i, &size_bytes)| file(i, size_bytes, 2))
             .collect();
-        select(&files, target)
+        let mut got: Vec<u64> = select(&files, target)
             .iter()
             .map(|f| f.size_bytes)
-            .collect()
+            .collect();
+        got.sort_unstable();
+        got
+    }
+
+    /// `(size_bytes, max_timestamp)` 各为一个文件（路径为其下标）时选中文件的下标，升序。
+    fn picked_at(files: &[(u64, i64)], target: u64) -> Vec<usize> {
+        let files: Vec<FileEntry> = files
+            .iter()
+            .enumerate()
+            .map(|(i, &(size, ts))| file(i, size, ts))
+            .collect();
+        let mut got: Vec<usize> = select(&files, target)
+            .iter()
+            .map(|f| files.iter().position(|g| g.path == f.path).unwrap())
+            .collect();
+        got.sort_unstable();
+        got
     }
 
     #[test]
@@ -403,5 +480,105 @@ mod tests {
         assert_eq!(picked(&[10, 2, 10], 21), [10, 10]);
         // 终点前的文件可以大于起点的 2 倍：11 不大于 1 + 10 的 2 倍，三个构成可合并的一组
         assert_eq!(picked(&[1, 10, 11], 42), [1, 10, 11]);
+    }
+
+    #[test]
+    fn select_takes_time_adjacent_files() {
+        // 下标即落盘先后；大小相近，全部之和超过目标大小：取最早的、位置相连的一段，而不是按大小取
+        let files: Vec<(u64, i64)> = (0..6).map(|i| (100 + (5 - i) * 3, 10 + i as i64)).collect();
+        assert_eq!(picked_at(&files, 350), [0, 1, 2]);
+        // 打乱给出的先后不影响结果：按 max_timestamp 排
+        let mut shuffled = files.clone();
+        shuffled.reverse();
+        let got: Vec<i64> = {
+            let entries: Vec<FileEntry> = shuffled
+                .iter()
+                .enumerate()
+                .map(|(i, &(s, t))| file(i, s, t))
+                .collect();
+            let mut ts: Vec<i64> = select(&entries, 350)
+                .iter()
+                .map(|f| f.max_timestamp)
+                .collect();
+            ts.sort_unstable();
+            ts
+        };
+        assert_eq!(got, [10, 11, 12]);
+    }
+
+    #[test]
+    fn select_by_time_judges_largest_in_range() {
+        let by_time = |files: &[(u64, i64)], target| {
+            let entries: Vec<FileEntry> = files
+                .iter()
+                .enumerate()
+                .map(|(i, &(s, t))| file(i, s, t))
+                .collect();
+            let got: Vec<u64> = select_by_time(entries.iter().collect(), target)
+                .iter()
+                .map(|f| f.size_bytes)
+                .collect();
+            got
+        };
+        // 按时间排时终点不一定最大：10 之后的 40 大于 10 的 2 倍，再加 15 后最大的 40 不大于 25 的 2 倍
+        assert_eq!(by_time(&[(10, 1), (40, 2), (15, 3)], 100), [10, 40, 15]);
+        // 只看终点会取 10、50、12（12 不大于 60 的 2 倍），但最大的 50 大于 22 的 2 倍，不构成可合并的一组
+        assert!(by_time(&[(10, 1), (50, 2), (12, 3)], 100).is_empty());
+    }
+
+    #[test]
+    fn select_takes_all_when_all_form_a_group() {
+        // 全部小文件构成可合并的一组：取全部，不论时间先后（REQ-AMB-STO-SEAL-COMPACTION-V4 第 13 条）
+        assert_eq!(picked_at(&[(30, 3), (10, 1), (20, 2)], 1000), [0, 1, 2]);
+    }
+
+    #[test]
+    fn select_falls_back_to_size_when_time_finds_none() {
+        // 按时间相邻的每一对都相差 2 倍以上，按大小 10 与 12 相邻、构成可合并的一组
+        assert_eq!(
+            picked_at(&[(10, 1), (100, 2), (12, 3), (400, 4)], 1000),
+            [0, 2]
+        );
+    }
+
+    /// 有相邻可合并组时一定选得到一组，且选出的是可合并的一组（第 12 条的 60 秒时限不因选法落空）：随机的大小与时间，
+    /// 按定义判定有无相邻可合并组，与 `select` 的结果对照。
+    #[test]
+    fn select_finds_a_group_whenever_an_adjacent_group_exists() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(20261109);
+        for _ in 0..20_000 {
+            let target = rng.random_range(4..2000u64);
+            let n = rng.random_range(0..12usize);
+            let files: Vec<FileEntry> = (0..n)
+                .map(|i| {
+                    let size = if rng.random_bool(0.3) {
+                        rng.random_range(1..=target)
+                    } else {
+                        rng.random_range(1..=(target / 8).max(1))
+                    };
+                    file(i, size, rng.random_range(0..5))
+                })
+                .collect();
+            let mut small: Vec<u64> = files
+                .iter()
+                .map(|f| f.size_bytes)
+                .filter(|s| s * 2 < target)
+                .collect();
+            small.sort_unstable();
+            // 相邻可合并组：按大小排成一列后位置相连、构成可合并的一组
+            let adjacent = (0..small.len())
+                .any(|l| (l + 2..=small.len()).any(|r| mergeable(&small[l..r], target)));
+            let got = select(&files, target);
+            let sizes: Vec<u64> = got.iter().map(|f| f.size_bytes).collect();
+            assert_eq!(!got.is_empty(), adjacent, "{files:?} {target}");
+            if adjacent {
+                assert!(mergeable(&sizes, target), "{sizes:?} {target}");
+                assert!(sizes.iter().all(|s| s * 2 < target));
+                if mergeable(&small, target) {
+                    assert_eq!(got.len(), small.len(), "全部构成一组时取全部");
+                }
+            }
+        }
     }
 }

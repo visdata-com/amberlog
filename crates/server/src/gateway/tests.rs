@@ -271,23 +271,23 @@ async fn handler_panic_answers_on_the_wire_and_keeps_serving() {
 // 模块挂载（`app` 的 `modules` 参数）
 // ---------------------------------------------------------------------------
 
-fn app_state(auth: crate::config::Auth) -> super::AppState {
+fn app_state(authz: crate::authz::Authz) -> super::AppState {
     super::AppState {
         health: std::sync::Arc::new(crate::telemetry::Health::new(
             std::env::temp_dir(),
             "file:///unused".into(),
         )),
         metrics: std::sync::Arc::new(crate::telemetry::Metrics::default()),
-        auth: std::sync::Arc::new(auth),
+        authz: std::sync::Arc::new(authz),
     }
 }
 
-/// 一个自带状态的测试模块：`POST /api/{org}/_probe` 回模块状态里的字符串。
+/// 一个自带状态的测试模块：挂在权限矩阵登记过的路由模板 `POST /api/{org}/_search` 上，回模块状态里的字符串。
 fn probe_module() -> Router {
     use axum::extract::State;
     Router::new()
         .route(
-            "/api/{org}/_probe",
+            "/api/{org}/_search",
             Endpoint::new()
                 .post(|State(s): State<std::sync::Arc<str>>| async move { s.to_string() })
                 .into(),
@@ -307,15 +307,13 @@ async fn send_to(app: Router, method: Method, uri: &str, bearer: Option<&str>) -
 #[tokio::test]
 async fn mounted_module_gets_uniform_gateway_handling() {
     let token = "s3cret";
-    let state = app_state(crate::config::Auth::Enabled {
-        token: token.into(),
-    });
+    let state = app_state(crate::authz::Authz::with_token(token));
     let app = super::app(state, vec![probe_module()]);
 
     let res = send_to(
         app.clone(),
         Method::POST,
-        "/api/default/_probe",
+        "/api/default/_search",
         Some(token),
     )
     .await;
@@ -325,11 +323,11 @@ async fn mounted_module_gets_uniform_gateway_handling() {
         "module-state"
     );
 
-    let res = send_to(app.clone(), Method::POST, "/api/default/_probe", None).await;
+    let res = send_to(app.clone(), Method::POST, "/api/default/_search", None).await;
     assert_envelope(res, StatusCode::UNAUTHORIZED, "unauthorized").await;
 
     for method in [Method::GET, Method::HEAD] {
-        let res = send_to(app.clone(), method, "/api/default/_probe", Some(token)).await;
+        let res = send_to(app.clone(), method, "/api/default/_search", Some(token)).await;
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(allow_set(&res), BTreeSet::from(["POST".to_owned()]));
     }
@@ -344,13 +342,13 @@ async fn mounted_module_gets_uniform_gateway_handling() {
 /// 挂载模块里的 panic 同样接住：认证区内回 500 信封，目录前缀下由出口改写为目录错误体；在途计数照常归还。
 #[tokio::test]
 async fn mounted_module_panic_is_internal() {
-    let state = app_state(crate::config::Auth::Disabled);
+    let state = app_state(crate::authz::Authz::disabled());
     let module = Router::new()
-        .route("/api/{org}/_boom", Endpoint::new().post(explode).into())
-        .route("/iceberg/v1/config", Endpoint::new().get(explode).into());
+        .route("/api/{org}/_search", Endpoint::new().post(explode).into())
+        .route("/iceberg/{*rest}", Endpoint::new().get(explode).into());
     let app = super::app(state.clone(), vec![module]);
 
-    let res = send_to(app.clone(), Method::POST, "/api/default/_boom", None).await;
+    let res = send_to(app.clone(), Method::POST, "/api/default/_search", None).await;
     assert_envelope(res, StatusCode::INTERNAL_SERVER_ERROR, "internal").await;
 
     let res = send_to(app.clone(), Method::GET, "/iceberg/v1/config", None).await;
@@ -373,10 +371,10 @@ async fn mounted_module_panic_is_internal() {
 /// 停机闸门对挂载的模块同样排在认证之前。
 #[tokio::test]
 async fn mounted_module_is_behind_shutdown_gate() {
-    let state = app_state(crate::config::Auth::Enabled { token: "t".into() });
+    let state = app_state(crate::authz::Authz::with_token("t"));
     state.health.begin_shutdown();
     let app = super::app(state, vec![probe_module()]);
-    let res = send_to(app, Method::POST, "/api/default/_probe", None).await;
+    let res = send_to(app, Method::POST, "/api/default/_search", None).await;
     assert!(!res.headers().contains_key(header::WWW_AUTHENTICATE));
     assert_envelope(res, StatusCode::SERVICE_UNAVAILABLE, "unavailable").await;
 }
@@ -384,6 +382,107 @@ async fn mounted_module_is_behind_shutdown_gate() {
 /// `/api/` 模块表能以各接口的替身构造并挂进 `app`。
 #[tokio::test]
 async fn api_routes_mount_with_storage_fakes() {
+    let state = app_state(crate::authz::Authz::disabled());
+    let app = super::app(
+        state.clone(),
+        crate::api::routes(&state, &fake_storage(), &crate::api::Settings::default()),
+    );
+    let res = send_to(app, Method::GET, "/healthz", None).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// 认证区内的每个端点都在权限矩阵中登记（REQ-AMB-AUTH-AUTHZ-MATRIX-CLOSED）：写入实例与只读目录模式各自装配好的路由表上，
+/// 权限矩阵的每一行都能匹配到端点、走到端点自己的处理（不是 404、405，也不是未登记的 500）；认证区内未登记的路由一律
+/// 500、不进端点，所以两份路由表里落在权限矩阵之外的认证区端点不能作答。
+#[tokio::test]
+async fn authz_matrix_covers_auth_zone() {
+    use crate::authz::EndpointKind;
+    use crate::authz::matrix::{MATRIX, kind_of};
+
+    // 权限矩阵的端点种类恰为块所列的六种
+    let kinds: BTreeSet<_> = MATRIX.iter().map(|(_, k)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        BTreeSet::from(["catalog", "fields", "json", "metrics", "search", "sent"])
+    );
+    assert_eq!(kind_of("/api/{org}/_search"), Some(EndpointKind::Search));
+
+    let token = "t";
+    let state = app_state(crate::authz::Authz::with_token(token));
+    let serve = super::app(
+        state.clone(),
+        crate::api::routes(&state, &fake_storage(), &crate::api::Settings::default()),
+    );
+    let catalog = super::catalog_app(
+        state.clone(),
+        crate::catalog::router(crate::catalog::Catalog::new(
+            unused_store(),
+            "amberlog-unused".into(),
+        )),
+    );
+    let probes: [(&Router, Method, &str); 7] = [
+        (&serve, Method::POST, "/api/default/app/_json"),
+        (&serve, Method::POST, "/api/default/app/_sent"),
+        (&serve, Method::POST, "/api/default/_search"),
+        (&serve, Method::GET, "/api/default/app/_fields"),
+        (&serve, Method::GET, "/metrics"),
+        (&catalog, Method::GET, "/metrics"),
+        (&catalog, Method::GET, "/iceberg/v1/config"),
+    ];
+    for (app, method, uri) in probes {
+        let res = send_to(app.clone(), method.clone(), uri, Some(token)).await;
+        let status = res.status();
+        assert!(
+            ![
+                StatusCode::NOT_FOUND,
+                StatusCode::METHOD_NOT_ALLOWED,
+                StatusCode::INTERNAL_SERVER_ERROR
+            ]
+            .contains(&status),
+            "{method} {uri}: {status}"
+        );
+    }
+    // 目录前缀下的模板由目录投影自己匹配：未注册的路径回 405，不是未登记的 500
+    let res = send_to(catalog.clone(), Method::GET, "/iceberg/", Some(token)).await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    // 认证区内未登记的路由不进端点
+    let module = Router::new()
+        .route(
+            "/api/{org}/{stream}/_probe",
+            Endpoint::new().post(|| async { "reached" }).into(),
+        )
+        .route(
+            "/metrics/x",
+            Endpoint::new().get(|| async { "open" }).into(),
+        );
+    let app = super::app(state, vec![module]);
+    let res = send_to(
+        app.clone(),
+        Method::POST,
+        "/api/default/app/_probe",
+        Some(token),
+    )
+    .await;
+    assert_envelope(res, StatusCode::INTERNAL_SERVER_ERROR, "internal").await;
+    // 认证区之外的路由不受权限矩阵约束
+    let res = send_to(app, Method::GET, "/metrics/x", None).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+fn unused_store() -> amberlog_storage::store::Store {
+    amberlog_storage::store::Store::open(
+        &amberlog_storage::store::Location::File {
+            dir: std::env::temp_dir(),
+        },
+        &amberlog_storage::store::S3Options::default(),
+        "amberlog-unused",
+    )
+    .unwrap()
+}
+
+/// `/api/` 模块表的存储侧句柄，全部是替身。
+fn fake_storage() -> crate::api::Storage {
     use amberlog_common::dataset::Dataset;
     use amberlog_query::files::{DataFiles, FileError};
     use amberlog_storage::BoxFuture;
@@ -402,15 +501,14 @@ async fn api_routes_mount_with_storage_fakes() {
             file: &'a FileEntry,
             _columns: &'a [String],
             _time: std::ops::Range<i64>,
-        ) -> BoxFuture<'a, Result<amberlog_query::files::FileBatches, FileError>> {
+        ) -> BoxFuture<'a, Result<Option<amberlog_query::files::FileBatches>, FileError>> {
             let e = FileError::NotFound(format!("{} not set", file.path));
             Box::pin(std::future::ready(Err(e)))
         }
     }
 
-    let state = app_state(crate::config::Auth::Disabled);
     let memtable = Arc::new(FakeMemtable::new());
-    let storage = crate::api::Storage {
+    crate::api::Storage {
         wal: Arc::new(FakeWal::new()),
         memtable: memtable.clone(),
         committer: Arc::new(FakeCommitter::new()),
@@ -421,23 +519,9 @@ async fn api_routes_mount_with_storage_fakes() {
         files: Arc::new(NoFiles),
         cold: Arc::new(amberlog_storage::testing::FakeColdReader::new()),
         counters: Arc::new(amberlog_ingest::counters::Counters::new(
-            amberlog_storage::store::Store::open(
-                &amberlog_storage::store::Location::File {
-                    dir: std::env::temp_dir(),
-                },
-                &amberlog_storage::store::S3Options::default(),
-                "amberlog-unused",
-            )
-            .unwrap(),
+            unused_store(),
             Arc::new(FakeWal::new()),
         )),
         alerts: Arc::new(amberlog_query::testing::FakeAlertHistory::new()),
-    };
-    let settings = crate::api::Settings::default();
-    let app = super::app(
-        state.clone(),
-        crate::api::routes(&state, &storage, &settings),
-    );
-    let res = send_to(app, Method::GET, "/healthz", None).await;
-    assert_eq!(res.status(), StatusCode::OK);
+    }
 }

@@ -652,6 +652,8 @@ impl Lake {
             }
         }
 
+        // 入湖输入已确定、尚未读取（REQ-AMB-STO-BACKGROUND-MEMORY 的「开始前的值」在此读）
+        fault::gate("lake.before_read").await;
         // ① 核对全部入湖输入的摘要
         let store = &chain.store;
         let mut bytes: Vec<Bytes> = Vec::with_capacity(inputs.len());

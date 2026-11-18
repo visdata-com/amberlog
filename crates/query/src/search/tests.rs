@@ -184,7 +184,11 @@ impl Fx {
 
     async fn run(&self, body: Value) -> Result<Value, (Reason, String)> {
         self.engine
-            .search("default", body.to_string().as_bytes())
+            .search(
+                "default",
+                body.to_string().as_bytes(),
+                &crate::viewer::System,
+            )
             .await
             .map(|r| r.to_json())
             .map_err(|e| (e.reason, e.message))
@@ -751,6 +755,7 @@ async fn hit_values_render_by_type() {
             json!({"query":{"sql":"SELECT _timestamp, i, f, g, b, s FROM hv","start_time":0,"end_time":END}})
                 .to_string()
                 .as_bytes(),
+            &crate::viewer::System,
         )
         .await
         .unwrap()
@@ -918,6 +923,60 @@ async fn bucket_outside_range_is_not_read() {
     assert_eq!(r["scan_files"], 0);
     let e = fx.sql("SELECT * FROM app").await.unwrap_err();
     assert_eq!(e, Reason::Unavailable, "覆盖该桶时才读它的 manifest");
+}
+
+/// REQ-AMB-QRY-SEARCH-ENDPOINT-V10 所称被扫描：文件的 `[min_timestamp, max_timestamp]` 与查询范围相交、但每个行组的
+/// `_timestamp` 上下界都不相交（查询范围落在两个行组之间的空档里）时，作答没有读它的任何行组，它不计入 `scan_files`、
+/// `scan_bytes` 与 `scan_records`。读真实的 Parquet 文件（`file://` 临时目录），行组按 `_timestamp` 的跳过与生产一致。
+#[tokio::test]
+async fn file_without_row_group_in_range_is_not_scanned() {
+    use amberlog_storage::store::{Location, S3Options, Store};
+    use parquet::arrow::ArrowWriter;
+    use parquet::file::properties::WriterProperties;
+
+    let mut fx = Fx::new();
+    fx.stream("gap", &[("a", I)]);
+    let dir = std::env::temp_dir().join(format!("amberlog-query-gap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let data = dir.join("amberlog/default/gap/data");
+    std::fs::create_dir_all(&data).unwrap();
+    let location = Location::File { dir: dir.clone() };
+    let store = Store::open(&location, &S3Options::default(), "amberlog").unwrap();
+    fx.engine.files = Arc::new(crate::files::StoreFiles::new(store));
+
+    // 一个文件两个行组：`_timestamp` 依次为 0、9 与 100、109
+    let rows: Vec<(i64, Value)> = [0, 9, 100, 109]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (*t, json!({"a": i as i64})))
+        .collect();
+    let b = batch(&fx.columns["gap"], &rows);
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(2))
+        .build();
+    let mut buf = Vec::new();
+    let mut w = ArrowWriter::try_new(&mut buf, b.schema(), Some(props)).unwrap();
+    w.write(&b).unwrap();
+    w.close().unwrap();
+    std::fs::write(data.join("gap.parquet"), &buf).unwrap();
+    let entry = file_entry("data/gap.parquet", 0, 109, 4);
+    let bucket = fx.bucket("gap", "1970010100", vec![entry.clone()]);
+    fx.put_snapshot("gap", 1, vec![bucket]);
+
+    let query = |start: i64, end: i64| json!({"query":{"sql":"SELECT a FROM gap","start_time":start,"end_time":end}});
+    // 查询范围落在空档里：按文件剪不掉，但没有要读的行组
+    let r = fx.run(query(50, 60)).await.unwrap();
+    assert_eq!(r["total"], 0);
+    assert_eq!(r["scan_files"], 0);
+    assert_eq!(r["scan_bytes"], 0);
+    assert_eq!(r["scan_records"], 0);
+    // 与第一个行组相交：读了一个行组，按条目计入整个文件
+    let r = fx.run(query(5, 10)).await.unwrap();
+    assert_eq!(r["total"], 1);
+    assert_eq!(r["scan_files"], 1);
+    assert_eq!(r["scan_bytes"], entry.size_bytes);
+    assert_eq!(r["scan_records"], 4);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,6 +1254,7 @@ async fn hit_keys_follow_select_order() {
             json!({"query": {"sql": "SELECT z, b AS a, a AS b FROM ko", "start_time": 0, "end_time": END}})
                 .to_string()
                 .as_bytes(),
+            &crate::viewer::System,
         )
         .await
         .unwrap()

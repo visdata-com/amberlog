@@ -1,7 +1,8 @@
 // 取数入口：POST /api/default/_search 与 GET /api/default/<stream>/_fields
-// （REQ-AMB-UI-CONSOLE-V2-TERM、REQUESTS、REQUEST-TIMEZONE、TOKEN-HEADER）。
+// （REQ-AMB-UI-CONSOLE-V3-TERM、REQUESTS、REQUEST-TIMEZONE、TOKEN-HEADER）。
 
 import { parseJson, type Hit, type Json } from "../lib/json.ts";
+import { beginDataRequest, onUnauthorized } from "./login.ts";
 import { settings } from "./settings.ts";
 
 const ENDPOINT = "/api/default/_search";
@@ -16,7 +17,15 @@ export interface Query {
 
 export type Outcome =
   | { kind: "ok"; hits: Hit[]; body: Map<string, Json> }
-  | { kind: "http"; status: number; reason: string | null; message: string | null; retryAfter: string | null }
+  | {
+      kind: "http";
+      status: number;
+      reason: string | null;
+      message: string | null;
+      retryAfter: string | null;
+      /** 响应头 `x-request-id` 的取值，没有时为 null（ERR-REQUEST-ID）。 */
+      requestId: string | null;
+    }
   | { kind: "connect" }
   | { kind: "aborted" };
 
@@ -51,7 +60,7 @@ export async function postSearch(q: Query, signal: AbortSignal): Promise<Outcome
   if (r.body !== null && Array.isArray(hits) && hits.every((h) => h instanceof Map)) {
     return { kind: "ok", hits: hits as Hit[], body: r.body };
   }
-  return { kind: "http", status: r.status, reason: null, message: null, retryAfter: null };
+  return { kind: "http", status: r.status, reason: null, message: null, retryAfter: null, requestId: r.requestId };
 }
 
 /** 发一个字段列表请求（REQ-AMB-QRY-FIELDS）：不带 `query.timezone`，其余同检索请求。 */
@@ -69,7 +78,7 @@ export async function getFields(stream: string, signal: AbortSignal): Promise<Fi
     }
     if (fields.length === list.length) return { kind: "ok", fields };
   }
-  return { kind: "http", status: r.status, reason: null, message: null, retryAfter: null };
+  return { kind: "http", status: r.status, reason: null, message: null, retryAfter: null, requestId: r.requestId };
 }
 
 // 2xx 时给出解析后的响应体（不是 JSON 对象时为 null），其余按 Outcome 的失败几种
@@ -78,19 +87,22 @@ async function send(
   url: string,
   body: string | null,
   signal: AbortSignal,
-): Promise<{ kind: "ok"; status: number; body: Map<string, Json> | null } | Failure> {
+): Promise<{ kind: "ok"; status: number; body: Map<string, Json> | null; requestId: string | null } | Failure> {
   const { token } = settings.get();
   const headers: Record<string, string> = {};
   if (body !== null) headers["Content-Type"] = "application/json";
   if (token !== "") headers["Authorization"] = "Bearer " + token;
   let res: Response;
   let raw: string;
+  const first = beginDataRequest();
   try {
     res = await fetch(url, { method, headers, body, signal });
     raw = await res.text();
   } catch {
+    first?.(0);
     return signal.aborted ? { kind: "aborted" } : { kind: "connect" };
   }
+  first?.(res.status);
   let parsed: Json | undefined;
   try {
     parsed = parseJson(raw);
@@ -98,17 +110,27 @@ async function send(
     parsed = undefined;
   }
   const obj = parsed instanceof Map ? parsed : null;
-  if (res.status >= 200 && res.status <= 299) return { kind: "ok", status: res.status, body: obj };
+  const requestId = res.headers.get("x-request-id");
+  if (res.status >= 200 && res.status <= 299) return { kind: "ok", status: res.status, body: obj, requestId };
   const reason = obj?.get("reason");
   const message = obj?.get("message");
   const envelope = typeof reason === "string" && typeof message === "string";
   // 对全部数据请求（结果请求与附属请求）生效；口令在请求发出后已改的，提示不针对当前的口令，不提示
-  if (res.status === 401 && settings.get().token === token) settings.set({ tokenInvalid: true });
+  if (settings.get().token === token) {
+    if (res.status === 401) {
+      // 口令由登录换得时整页跳转重新登录，这次失败不再呈现（LOGIN-REAUTH）
+      const reauth = await onUnauthorized(first !== null);
+      if (reauth === "redirect") return { kind: "aborted" };
+      if (reauth === "none") settings.set({ tokenHint: "invalid" });
+    }
+    if (res.status === 403) settings.set({ tokenHint: "forbidden" });
+  }
   return {
     kind: "http",
     status: res.status,
     reason: envelope ? reason : null,
     message: envelope ? message : null,
     retryAfter: res.headers.get("Retry-After"),
+    requestId,
   };
 }

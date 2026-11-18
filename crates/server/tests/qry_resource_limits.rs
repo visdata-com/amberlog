@@ -1,4 +1,4 @@
-//! 查询资源上限（REQ-AMB-QRY-RESOURCE-LIMITS-V2）：执行名额、准入、
+//! 查询资源上限（REQ-AMB-QRY-RESOURCE-LIMITS-V4）：执行名额、准入、
 //! 单查询内存上限、执行结束之后的内存、不波及摄取与就绪、两个指标、告警评估占用执行名额。
 //!
 //! 「已提交数据」以 `flush.interval` 为 `1h` 的实例摄取后优雅停机写出（停机时 flush 并提交），再以场景的配置重启。
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use common::alerting::{Clock, RuleToml, rules};
 use common::api;
 use common::webhook::{Receiver, Reply};
-use common::{BEARER, Fixture, Kv, Resp, Server, gov, http};
+use common::{BEARER, Fixture, Kv, Resp, Server, gov, http, http_within};
 use serde_json::{Value, json};
 
 /// 场景约定的查询时间范围上界（2100-01-01T00:00:00Z，UTC 微秒）。
@@ -587,21 +587,16 @@ fn resource_limits_rss_no_growth() {
     );
 }
 
-/// 摄取 `records` 条记录到 `app`（`_timestamp` 在此刻 3 小时之前的那一小时里均匀铺开，`a` 取 1000 个整数，`msg` 由
-/// `msg(i)` 给出），返回以配置 `overrides` 运行、已把这一小时并成一个数据文件的实例。
-///
-/// 摄取时以 `lifecycle.seal_grace` 为 `24h`、其余为 `overrides` 启动，等记录都可检索后以 SIGTERM 退出，再以 `overrides`
-/// 重启：边摄取边封口时，中途的一次合并若已吃掉大部分数据，它与后到的文件构不成可合并的一组
-/// （REQ-AMB-STO-SEAL-COMPACTION-V4），桶停在 2 个文件。
-fn seed_one_hour(
-    fx: &Fixture,
-    overrides: &[Kv],
+/// 摄取 `records` 条记录到 `stream`（`_timestamp` 在起点为 `hour` 的那一小时里均匀铺开，`a` 取 1000 个整数，`msg` 由
+/// `msg(i)` 给出），每个请求 5 万条。
+fn ingest_hour(
+    server: &Server,
+    stream: &str,
+    hour: i64,
     records: i64,
     msg: &mut dyn FnMut(i64) -> String,
-) -> Server {
+) {
     const BATCH: i64 = 50_000;
-    let mut server = start(fx, &unsealed(overrides), &[]);
-    let hour = (api::now_us() / api::HOUR_US - 3) * api::HOUR_US;
     for chunk in 0..records / BATCH {
         let rows: Vec<Value> = (chunk * BATCH..(chunk + 1) * BATCH)
             .map(|i| {
@@ -612,25 +607,35 @@ fn seed_one_hour(
                 })
             })
             .collect();
-        api::ingest_ok(&server, "app", &Value::Array(rows).to_string());
+        api::ingest_ok(server, stream, &Value::Array(rows).to_string());
     }
+}
+
+/// 轮询 `SELECT count(*) AS n FROM <stream>` 直到 `records` 条记录都可检索。
+fn wait_searchable(server: &Server, stream: &str, records: i64) {
+    let sql = format!("SELECT count(*) AS n FROM {stream}");
     let (r, all) = api::poll(
         Duration::from_secs(120),
-        || search(&server, "SELECT count(*) AS n FROM app"),
+        || search(server, &sql),
         |r| r.status == 200 && r.json()["hits"][0]["n"] == records,
     );
-    assert!(all, "记录未在 2 分钟内都可检索：{}", r.text());
-    common::store::stop(&mut server);
+    assert!(all, "{stream} 的记录未在 2 分钟内都可检索：{}", r.text());
+}
 
-    let server = start(fx, overrides, &[]);
+/// 轮询 `SELECT count(*) AS n FROM <stream>` 直到 `scan_files` 等于 `files`（封口合并已完成），并核对记录数。
+fn wait_merged(server: &Server, stream: &str, files: i64, records: i64) {
+    let sql = format!("SELECT count(*) AS n FROM {stream}");
     let (r, merged) = api::poll(
-        Duration::from_secs(300),
-        || search(&server, "SELECT count(*) AS n FROM app"),
-        |r| r.status == 200 && r.json()["scan_files"] == 1,
+        Duration::from_secs(600),
+        || search(server, &sql),
+        |r| r.status == 200 && r.json()["scan_files"] == files,
     );
-    assert!(merged, "封口合并未在 5 分钟内完成：{}", r.text());
+    assert!(
+        merged,
+        "{stream} 的封口合并未在 10 分钟内完成：{}",
+        r.text()
+    );
     assert_eq!(r.json()["hits"][0]["n"], records, "{}", r.text());
-    server
 }
 
 /// `overrides` 中的 `lifecycle.seal_grace` 换成 `24h`：摄取期间不封口、不合并（见 [`seed_one_hour`]）。
@@ -642,6 +647,29 @@ fn unsealed<'a>(overrides: &[Kv<'a>]) -> Vec<Kv<'a>> {
         .collect();
     kv.push(("lifecycle.seal_grace", Some("\"24h\"")));
     kv
+}
+
+/// 摄取 `records` 条记录到 `app`（此刻 3 小时之前的那一小时，见 [`ingest_hour`]），返回以配置 `overrides` 运行、已把
+/// 这一小时并成一个数据文件的实例。
+///
+/// 摄取时以 `lifecycle.seal_grace` 为 `24h`、其余为 `overrides` 启动，等记录都可检索后以 SIGTERM 退出，再以 `overrides`
+/// 重启：边摄取边封口时，中途的一次合并若已吃掉大部分数据，它与后到的文件构不成可合并的一组
+/// （REQ-AMB-STO-SEAL-COMPACTION-V4），桶停在 2 个文件。
+fn seed_one_hour(
+    fx: &Fixture,
+    overrides: &[Kv],
+    records: i64,
+    msg: &mut dyn FnMut(i64) -> String,
+) -> Server {
+    let mut server = start(fx, &unsealed(overrides), &[]);
+    let hour = (api::now_us() / api::HOUR_US - 3) * api::HOUR_US;
+    ingest_hour(&server, "app", hour, records, msg);
+    wait_searchable(&server, "app", records);
+    common::store::stop(&mut server);
+
+    let server = start(fx, overrides, &[]);
+    wait_merged(&server, "app", 1, records);
+    server
 }
 
 /// 合并查询所用的配置：封口快、这一小时并成一个文件。
@@ -690,10 +718,11 @@ fn scan_memory_does_not_grow_with_scanned_bytes() {
     );
 }
 
-/// 不对应块场景的回归测试（RSS-NO-GROWTH 的条款前提只要求「上一次作答之后才提交」，不要求间隔）：数据与查询同场景
-/// 「依次重复的查询不使常驻内存增长」，但每次作答之后立即读 `RssAnon`、立即提交下一次，名额从不空闲满 1 秒。
+/// 场景「不停顿地依次重复查询，常驻内存也不增长」（RSS-NO-GROWTH 的条款前提只要求「上一次作答之后才提交」，不要求
+/// 间隔）：数据与查询同场景「依次重复的查询不使常驻内存增长」，但每次作答之后立即读 `RssAnon`、立即提交下一次，名额从不
+/// 空闲满 1 秒。
 #[test]
-fn rss_no_growth_back_to_back() {
+fn resource_limits_rss_no_growth_back_to_back() {
     const RECORDS: i64 = 1_000_000;
     const Q: &str = "SELECT a, count(*) AS n, max(msg) AS m FROM app GROUP BY a";
     let fx = Fixture::new();
@@ -711,6 +740,107 @@ fn rss_no_growth_back_to_back() {
         r20 <= r1 + 536_870_912,
         "R1 = {r1}，R20 = {r20}；各次 RssAnon（MiB）：{:?}",
         rss.iter().map(|b| b >> 20).collect::<Vec<_>>()
+    );
+}
+
+/// 各条不同的 200 个十六进制字符（xorshift 生成）。任意随机字节几乎压不动，每小时 100 万条会超过合并目标大小；十六进制
+/// 字符每小时压缩后约 107 MB，一个小时桶并成一个数据文件。
+fn random_hex(state: &mut u64) -> String {
+    let mut out = String::with_capacity(208);
+    while out.len() < 200 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        out.push_str(&format!("{:016x}", *state));
+    }
+    out.truncate(200);
+    out
+}
+
+/// 提交 `sql`，自提交前至作答每 20 毫秒读一次被测进程的 `RssAnon`；返回响应与峰值减提交前读数之差（字节）。
+/// 所扫数据多，作答用时随机器快慢（较慢的机器上超过 30 秒），读超时取 600 秒；本场景只判峰值，不判用时。
+fn peak_increase(server: &Server, sql: &str) -> (Resp, u64) {
+    let before = rss_anon(server);
+    let (addr, b) = (server.addr, body(sql, None));
+    let q = std::thread::spawn(move || {
+        http_within(
+            addr,
+            "POST",
+            "/api/default/_search",
+            &[("Authorization", BEARER)],
+            b.as_bytes(),
+            Duration::from_secs(600),
+        )
+    });
+    let mut peak = before;
+    while !q.is_finished() {
+        peak = peak.max(rss_anon(server));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    (q.join().unwrap(), peak.saturating_sub(before))
+}
+
+/// 场景「不计量的占用不随所扫数据文件的个数增长」（METERED-SCOPE）。被测进程是测试启动的 `amberlog serve` 子进程，读它的
+/// `/proc/<pid>/status`（只为 Linux 编写）。断言之前把两个峰值增量与差打到 stderr。超过 256 MiB 的失败不改判据、不重跑
+/// 掩盖：附这三个数按缺口上报，由人裁放宽多少，经替代块改。
+#[test]
+fn resource_limits_unmetered_not_growing_with_files() {
+    const PER_HOUR: i64 = 1_000_000;
+    const BIG_HOURS: i64 = 8;
+    const MARGIN: u64 = 268_435_456;
+    const CONFIG: [Kv; 2] = [
+        ("lifecycle.seal_grace", Some("\"1s\"")),
+        ("compaction.target_file_bytes", Some("1073741824")),
+    ];
+    let fx = Fixture::new();
+    // 摄取期间不封口，摄取完以 SIGTERM 退出后再以 `CONFIG` 重启（理由见 [`seed_one_hour`]）；被测进程是重启后的进程
+    let mut server = start(&fx, &unsealed(&CONFIG), &[]);
+    let top = (api::now_us() / api::HOUR_US - 3) * api::HOUR_US;
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    ingest_hour(&server, "small", top, PER_HOUR, &mut |_| {
+        random_hex(&mut state)
+    });
+    for h in 0..BIG_HOURS {
+        ingest_hour(
+            &server,
+            "big",
+            top - h * api::HOUR_US,
+            PER_HOUR,
+            &mut |_| random_hex(&mut state),
+        );
+    }
+    wait_searchable(&server, "small", PER_HOUR);
+    wait_searchable(&server, "big", BIG_HOURS * PER_HOUR);
+    common::store::stop(&mut server);
+    let server = start(&fx, &CONFIG, &[]);
+    wait_merged(&server, "small", 1, PER_HOUR);
+    wait_merged(&server, "big", BIG_HOURS, BIG_HOURS * PER_HOUR);
+
+    let mut increase = Vec::new();
+    for (stream, files) in [("small", 1), ("big", BIG_HOURS)] {
+        // 执行名额空闲 1 秒后空闲内存已归还
+        std::thread::sleep(Duration::from_secs(3));
+        let (r, d) = peak_increase(
+            &server,
+            &format!("SELECT count(*) AS n FROM {stream} WHERE msg LIKE '%x%'"),
+        );
+        assert_eq!(r.status, 200, "{stream}：{}", r.text());
+        assert_eq!(r.json()["scan_files"], files, "{stream}：{}", r.text());
+        increase.push(d);
+    }
+    let (small, big) = (increase[0], increase[1]);
+    eprintln!(
+        "峰值增量（KiB）：small {}，big {}，差 {}",
+        small >> 10,
+        big >> 10,
+        big.saturating_sub(small) >> 10
+    );
+    assert!(
+        big <= small + MARGIN,
+        "峰值增量 small {} MiB，big {} MiB，差 {} MiB",
+        small >> 20,
+        big >> 20,
+        big.saturating_sub(small) >> 20
     );
 }
 
@@ -1021,6 +1151,62 @@ fn search_resource_limit_report_order() {
         429,
         "too_many_queries",
     );
+    gate.release();
+    assert_eq!(q1.join().unwrap().status, 200);
+}
+
+/// REQ-AMB-QRY-SEARCH-ENDPOINT-V10 场景「授权的拒绝在报告顺序中的位置」：名称不合规先于请求体一步的 403，403 与范围外的
+/// `stream_not_found` 都在准入之前，不占执行名额。
+#[test]
+fn search_authz_report_order() {
+    use common::authz::{ServiceToken, authz_file_value, token_entry, write};
+    let fx = Fixture::new();
+    gov::committed(
+        &fx,
+        &[
+            ("app_web", r#"[{"a":"x"}]"#),
+            ("hr_audit", r#"[{"a":"y"}]"#),
+        ],
+    );
+    let (g, q) = (ServiceToken::generate(), ServiceToken::generate());
+    let file = authz_file_value(&write(
+        &fx,
+        &[
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+            ),
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app_*"] }]"#),
+        ],
+    ));
+    let gate = Gate::new(&fx, "query.after_admission");
+    let server = start(
+        &fx,
+        &[ONE_SLOT, ("auth.authz_file", Some(file.as_str()))],
+        &[gate.env()],
+    );
+    let q1 = spawn_search(&server, "SELECT * FROM app_web", None);
+    wait_running(&server, 1.0);
+    let as_ = |token: &ServiceToken, sql: &str| {
+        http(
+            server.addr,
+            "POST",
+            "/api/default/_search",
+            &[("Authorization", token.bearer().as_str())],
+            body(sql, None).as_bytes(),
+        )
+    };
+    assert_reason(
+        &as_(&g, "SELECT lower(a) FROM app_web"),
+        400,
+        "sql_unsupported",
+    );
+    assert_reason(&as_(&g, r#"SELECT * FROM "App""#), 400, "stream_not_found");
+    assert_reason(&as_(&g, "SELECT * FROM app_web"), 403, "forbidden");
+    assert_reason(&as_(&g, "SELECT * FROM nope"), 403, "forbidden");
+    assert_reason(&as_(&q, "SELECT * FROM hr_audit"), 400, "stream_not_found");
+    assert_eq!(running(&server), 1.0);
     gate.release();
     assert_eq!(q1.join().unwrap().status, 200);
 }

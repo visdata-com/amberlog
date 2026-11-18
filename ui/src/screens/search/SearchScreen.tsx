@@ -1,4 +1,4 @@
-// 检索屏（REQ-AMB-UI-SEARCH-V2）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
+// 检索屏（REQ-AMB-UI-SEARCH-V4）：数据集与时间范围、条件框（条件与 SQL 两种模式）、发起检索（检索请求加分布请求或计数请求）、
 // 分布图、总条数与结果信息、结果表与翻页、字段栏与取值提示。单条详情另在 detail/，查询历史另在 history/。
 
 import { Button } from "../../components/ui/Button.tsx";
@@ -362,7 +362,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
 
   /** 提交尚未回车的输入，返回同一次操作要使用的完整条件，避免读到旧 state。 */
   const prepareConditions = (): Chip[] | null => {
-    const draft = conditionDraft(conditionInput, conditionColumns);
+    const draft = conditionDraft(conditionInput);
     if (draft.error !== null) {
       setConditionError(draft.error);
       document.getElementById("s-cond-input")?.focus();
@@ -373,11 +373,14 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     return draft.condition === null ? chips : addCondition(draft.condition);
   };
 
-  /** 发起检索（REQ-AMB-UI-SEARCH-QUERY）：点「查询」、点柱缩放、「关闭并查询」。 */
-  const launch = (): void => {
+  /**
+   * 发起检索（REQ-AMB-UI-SEARCH-V4-QUERY）：点「查询」、点柱缩放、「关闭并查询」。只有点「查询」（`draft` 为真）时
+   * 先处理条件框中的草稿（DRAFT）：不完整的不发起检索，完整的先加入为条件。
+   */
+  const launch = (draft = false): void => {
     // 429 倒计时中、或全文范围超限时「查询」不可用；点柱缩放、「关闭并查询」同样不发
     if (req.queryDisabled) return;
-    const queryChips = mode === "cond" ? prepareConditions() : [];
+    const queryChips = mode !== "cond" ? [] : draft ? prepareConditions() : chips;
     if (queryChips === null) return;
     const queryConditions = queryChips.map((c) => c.cond);
     if (mode === "cond" && fulltextBlocked(queryConditions, range.length())) return;
@@ -588,14 +591,11 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
     }
     saveCollapsed(!collapsed);
     setCollapsed(!collapsed);
-    // 收起期间的新查询只请求总条数；重新展开时补取该次查询的分布。
-    if (collapsed && chart.kind === "none" && histInput !== null) void sendHist(histInput);
+    // 由收起改为显示：最近一次检索在条件模式下发出、而分布图区没有它的分布结果时补发分布请求（HIST-COLLAPSE）
+    if (collapsed && launched?.mode === "cond" && chart.kind === "none" && histInput !== null) void sendHist(histInput);
   };
-  const emptyChart = chart.kind === "bars" && chart.bars.every((b) => b.n === "0");
-  const showHistogramToggle =
-    mode === "cond" && histInput !== null && !emptyChart && (collapsed || chart.kind !== "none");
   const toggleText =
-    chart.kind === "busy" ? "重画分布图" : collapsed ? "显示分布图" : "收起分布图";
+    mode === "sql" ? "手写 SQL 不画分布图" : chart.kind === "busy" ? "重画分布图" : collapsed ? "显示分布图" : "收起分布图";
 
   const zoom = (a: number, b: number): void => {
     if (chart.kind !== "bars") return;
@@ -650,7 +650,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                   » 字段
                 </button>
               )}
-              <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={launch}>
+              <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={() => launch(true)}>
                 {req.running ? "查询中" : "查询"}
               </Button>
               {pending && <span className="staged-mark" id="s-staged" title="条件已改，尚未查询" />}
@@ -743,11 +743,9 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               </span>
             )}
             <span className="spacer" />
-            {showHistogramToggle && (
-              <button type="button" id="s-hist-toggle" onClick={toggle}>
-                {toggleText}
-              </button>
-            )}
+            <button type="button" id="s-hist-toggle" disabled={mode === "sql"} onClick={toggle}>
+              {toggleText}
+            </button>
             {hiddenCols.size > 0 && (
               <span className="restore" id="s-hidden-cols">
                 {[...hiddenCols].map((c) => (
@@ -780,7 +778,7 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
               下一页
             </Button>
           </div>
-          {mode === "cond" && !collapsed && !emptyChart && (chart.kind === "bars" || chart.kind === "error") && (
+          {mode === "cond" && !collapsed && (chart.kind === "bars" || chart.kind === "error") && (
             <div className="hist-area" id="s-hist">
               {chart.kind === "bars" && (
                 <Histogram name={chart.name} bars={chart.bars} interval={chart.us} range={chart.range} onZoom={zoom} />

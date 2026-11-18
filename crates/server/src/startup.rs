@@ -13,6 +13,7 @@ mod evidence;
 mod nofile;
 mod retire;
 mod serve;
+mod token;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ use std::sync::Arc;
 use amberlog_storage::store::Store;
 use serde_json::Value;
 
+use crate::authz::{self, Authz};
 use crate::cli::{self, Command};
 use crate::config::{self, Auth, Config, ConfigError};
 use crate::form::Form;
@@ -65,6 +67,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> u8 {
             println!("{}", version::line());
             EXIT_OK
         }
+        Ok(Command::TokenNew) => token::run(),
         Ok(Command::Serve { config }) => launch(Launch::Serve { config }),
         Ok(Command::Catalog { config }) => launch(Launch::Catalog { config }),
         Ok(Command::Retire { config }) => launch(Launch::Retire { config }),
@@ -108,10 +111,20 @@ impl Launch {
     }
 }
 
-/// 配置一步之后各形态带进启动流程的东西（[`prepare`] 构造）：监听形态带入站 TLS 设置（配了证书时），证据带校验过的子命令参数。
+/// `auth.token` 不短于这个字符数时不提醒（`auth_token_short`）。
+const AUTH_TOKEN_MIN_LENGTH: usize = 32;
+
+/// 配置一步之后各形态带进启动流程的东西（[`prepare`] 构造）：监听形态带入站 TLS 设置（配了证书时）与认证授权的设置
+/// （含读到的授权文件），证据带校验过的子命令参数。
 enum Prepared {
-    Serve { inbound: Option<Inbound> },
-    Catalog { inbound: Option<Inbound> },
+    Serve {
+        inbound: Option<Inbound>,
+        authz: Arc<Authz>,
+    },
+    Catalog {
+        inbound: Option<Inbound>,
+        authz: Arc<Authz>,
+    },
     Retire,
     Evidence(evidence::Job),
 }
@@ -166,13 +179,29 @@ fn launch(launch: Launch) -> u8 {
         &[("version", Value::from(version::SEMVER))],
     );
     nofile::raise_and_report();
-    if cfg.auth == Some(Auth::Disabled) {
-        logging::event(
+    match &cfg.auth {
+        Some(Auth::Disabled) => logging::event(
             Level::Warn,
             "auth_disabled",
             "authentication is disabled: every endpoint accepts requests without credentials",
-            &[],
-        );
+            &[("authz_file_ignored", Value::from(cfg.authz_file.is_some()))],
+        ),
+        // 只报长度，不报取值（REQ-AMB-CFG-STARTUP-V10 `auth_token_short`；不使启动失败）
+        Some(Auth::Enabled { token: Some(token) })
+            if matches!(form, Form::Serve | Form::Catalog)
+                && token.chars().count() < AUTH_TOKEN_MIN_LENGTH =>
+        {
+            logging::event(
+                Level::Warn,
+                "auth_token_short",
+                "auth.token is shorter than recommended; use a longer random value",
+                &[
+                    ("length", Value::from(token.chars().count())),
+                    ("min_length", Value::from(AUTH_TOKEN_MIN_LENGTH)),
+                ],
+            );
+        }
+        _ => {}
     }
 
     encryption::announce(form, &cfg);
@@ -209,18 +238,57 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
 fn prepare(launch: Launch, cfg: &mut Config, cwd: &Path) -> Result<Prepared, Vec<ConfigError>> {
     let inbound = encryption::prepare(launch.form(), cfg)?;
     Ok(match launch {
-        Launch::Serve { .. } => Prepared::Serve { inbound },
-        Launch::Catalog { .. } => Prepared::Catalog { inbound },
+        Launch::Serve { .. } => Prepared::Serve {
+            inbound,
+            authz: authz(cfg)?,
+        },
+        Launch::Catalog { .. } => Prepared::Catalog {
+            inbound,
+            authz: authz(cfg)?,
+        },
         Launch::Retire { .. } => Prepared::Retire,
         Launch::Evidence(args) => Prepared::Evidence(evidence::prepare(args, cfg, cwd)?),
     })
 }
 
+/// 受理请求的形态的认证与授权设置。配了 `auth.authz_file` 时在这里读取并校验授权文件（`auth.enabled` 为 false 时同样校验，
+/// 校验通过后不生效）：不存在、不可读或无效都按配置错误以退出码 2 退出，错误行指出该路径（REQ-AMB-CFG-STARTUP-V10、
+/// REQ-AMB-AUTH-AUTHZ-STARTUP-INVALID、-DISABLED-FILE-CHECKED）。离线子命令不走这里，不读授权文件。
+fn authz(cfg: &Config) -> Result<Arc<Authz>, Vec<ConfigError>> {
+    let file = match &cfg.authz_file {
+        None => None,
+        Some(src) => {
+            let table = std::fs::read_to_string(&src.path)
+                .map_err(|e| format!("cannot read the file: {e}"))
+                .and_then(|text| authz::file::parse(&text).map_err(|why| why.to_string()))
+                .map_err(|why| {
+                    vec![ConfigError {
+                        subject: "auth.authz_file".to_owned(),
+                        message: format!("{}: {why}", src.path.display()),
+                    }]
+                })?;
+            Some((src.clone(), table))
+        }
+    };
+    Ok(Arc::new(match &cfg.auth {
+        // 配置了 `auth.oidc.issuer` 时接上身份平台；说明文档与公钥集由监听形态的启动流程在后台取（`Idp::spawn`）
+        Some(Auth::Enabled { token }) => match &cfg.oidc {
+            Some(oidc) => Authz::enabled(token.clone(), file, cfg.log_access)
+                .with_idp(Arc::new(crate::oidc::Idp::new(oidc.clone()))),
+            None => Authz::enabled(token.clone(), file, cfg.log_access),
+        },
+        // 认证关闭时授权文件不生效；受理请求的形态里配置装载保证 `auth` 已定
+        Some(Auth::Disabled) | None => Authz::disabled(),
+    }))
+}
+
 /// 按形态交给各自的启动流程，返回进程退出码。
 async fn run(cfg: Config, prepared: Prepared, lifecycle: Arc<Lifecycle>) -> Result<u8, Failure> {
     match prepared {
-        Prepared::Serve { inbound } => serve::run(cfg, inbound, lifecycle).await.map(|()| EXIT_OK),
-        Prepared::Catalog { inbound } => catalog::run(cfg, inbound, lifecycle)
+        Prepared::Serve { inbound, authz } => serve::run(cfg, inbound, authz, lifecycle)
+            .await
+            .map(|()| EXIT_OK),
+        Prepared::Catalog { inbound, authz } => catalog::run(cfg, inbound, authz, lifecycle)
             .await
             .map(|()| EXIT_OK),
         Prepared::Retire => retire::run(cfg, lifecycle).await,
@@ -239,19 +307,11 @@ struct Http {
 }
 
 impl Http {
-    fn spawn<L>(listener: L, app: axum::Router) -> Http
-    where
-        L: axum::serve::Listener,
-        L::Addr: std::fmt::Debug,
-    {
+    fn spawn<L: axum::serve::Listener>(listener: L, app: axum::Router) -> Http {
         let (close, closing) = tokio::sync::oneshot::channel::<()>();
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    let _ = closing.await;
-                })
-                .await
-        });
+        let task = tokio::spawn(crate::gateway::conn::serve(listener, app, async {
+            let _ = closing.await;
+        }));
         Http { close, task }
     }
 

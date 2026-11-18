@@ -95,7 +95,7 @@ impl DeliveryResult {
     }
 }
 
-/// 一次已结束的评估交给评估记录写出的内容：REQ-AMB-ALR-EVALUATIONS-ENTRY-SHAPE 的十二个字段，另带它所属的评估记录对象的
+/// 一次已结束的评估交给评估记录写出的内容：REQ-AMB-ALR-EVALUATIONS-V2-ENTRY-SHAPE 的十三个字段，另带它所属的评估记录对象的
 /// `org` 与 `rule`。时刻都是 UTC 微秒。不含 `webhook_url` 与 `webhook_headers`（-NO-SECRETS）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluationRecord {
@@ -115,6 +115,8 @@ pub struct EvaluationRecord {
     pub delivery: DeliveryResult,
     pub attempts: u32,
     pub last_http_status: Option<u16>,
+    /// 该次评估所查的对象（REQ-AMB-ALR-EVALUATIONS-V2-ENTRY-VALUES，[`super::rule::Rule::target`]）。
+    pub target: String,
 }
 
 #[cfg(test)]

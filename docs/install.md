@@ -21,7 +21,7 @@ Before you deploy, read section 1 of [Known limitations and roadmap](known-limit
 | Item | Requirement |
 |---|---|
 | Operating system | Linux x86_64 or aarch64, glibc 2.28 or later (for example RHEL 8 and its derivatives, Kylin V10, Debian 10 or later, Ubuntu 20.04 or later). With the container image, the host only needs to run Docker or a compatible container engine |
-| Object storage | MinIO (tested), or AWS S3 and Ceph RGW (supported through the S3-compatible API, not yet tested); see section 6. For a functional trial only, you can also use local disk |
+| Object storage | MinIO (tested), or AWS S3 and Ceph RGW (supported through the S3-compatible API, not yet tested); see section 6. For a trial or a single-node deployment, you can also use local disk (`file://`, section 6.8) |
 | Local disk | Holds the WAL. When there is a backlog, the WAL grows; its size is about the volume of the backlogged records. The disk must be reliable: records that are acknowledged but not yet committed exist only here |
 | Memory | See section 9. The largest item is cold compaction, which grows with one day of data of a single dataset |
 | Network | The write instance listens on port 8800 by default. The read-only catalog mode uses another port |
@@ -437,7 +437,10 @@ The tests in this guide did not enable server-side encryption.
 ### 6.8 Local disk
 
 - `object_store.url = "file:///var/lib/amberlog/data"`. The path must be absolute. Create the directory first; otherwise Amberlog exits with exit code 3.
-- Suitable only for a functional trial. If the storage directory is moved away while Amberlog runs, or its volume is unmounted, `/readyz` does not report not-ready (section 8 of the [Operations guide](operations.md)).
+- Use local disk for a trial or a single-node deployment. Single-node means that every process that uses the directory runs on this node: the write instance, the read-only subcommands (`amberlog catalog`, `amberlog evidence export`, `amberlog evidence verify`) and the external engines that read the cold-tier tables. For a production deployment, we recommend `s3://`.
+- The directory must be on a local file system of this node, or on a block-storage volume mounted on this node (for example a cloud disk). A directory on a network file system (for example NFS) is outside what Amberlog guarantees for `file://`. Amberlog does not check the file system type: the deployer must make sure of this.
+- Point `object_store.url` at a subdirectory inside the volume, not at the mount point itself, and create the subdirectory at the first deployment. For example, mount the volume at `/var/lib/amberlog` and use `/var/lib/amberlog/data`. Then, if the volume is not mounted at some start, the subdirectory does not exist and Amberlog exits with exit code 3, instead of writing the data to the machine's own disk.
+- If the storage directory is moved away while Amberlog runs, or its volume is unmounted, `/readyz` does not report not-ready (section 8 of the [Operations guide](operations.md)).
 
 ## 7. Read-only credentials for external engines
 

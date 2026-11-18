@@ -10,7 +10,7 @@ export interface FieldGroup {
   fields: Field[];
 }
 
-/** REQ-AMB-DM-NAMESPACE-V2 所定 `{stream}` 的合规写法。 */
+/** REQ-AMB-DM-NAMESPACE-V3 所定 `{stream}` 的合规写法。 */
 export const isStreamName = (s: string): boolean => /^[a-z0-9][a-z0-9_]{0,63}$/.test(s);
 
 /** 只把 ASCII 字母视为不区分大小写（同 match_all）。 */

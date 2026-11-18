@@ -107,6 +107,7 @@ fn matched(rule: &str, t: i64) -> EvaluationRecord {
         delivery: DeliveryResult::Delivered,
         attempts: 1,
         last_http_status: Some(200),
+        target: "default/app".into(),
     }
 }
 
@@ -167,7 +168,8 @@ fn object_shape_round_trips_and_nulls() {
     let e = &v["evaluations"];
     assert_eq!(e[0]["scheduled_at"], H);
     assert_eq!(e[1]["scheduled_at"], H + MINUTE);
-    assert_eq!(e[1].as_object().unwrap().len(), 12);
+    assert_eq!(e[1].as_object().unwrap().len(), 13);
+    assert_eq!(e[1]["target"], "default/app");
     for k in [
         "started_at",
         "matched_rows",
@@ -185,18 +187,47 @@ fn object_shape_round_trips_and_nulls() {
 fn parse_rejects_wrong_shapes() {
     let good = r#"{"format_version":1,"org":"default","rule":"r1","evaluations":[]}"#;
     assert!(object::parse(good.as_bytes()).is_ok());
+    // 未定义的字段忽略（REQ-AMB-ALR-EVALUATIONS-V2-READ-UNDEFINED-FIELDS）
+    let extra = r#"{"format_version":1,"org":"default","rule":"r1","evaluations":[],"x":1}"#;
+    assert!(object::parse(extra.as_bytes()).is_ok());
+    let entry = |target: &str| {
+        format!(
+            r#"{{"format_version":1,"org":"default","rule":"r1","evaluations":[{{"scheduled_at":1,"started_at":null,"finished_at":2,"window_start":0,"window_end":1,"outcome":"skipped","reason":"previous_running","matched_rows":null,"truncated":null,"delivery":"not_attempted","attempts":0,"last_http_status":null{target}}}]}}"#
+        )
+    };
+    assert!(object::parse(entry("").as_bytes()).is_ok());
+    assert!(object::parse(entry(r#","target":"default/app""#).as_bytes()).is_ok());
+    // `target` 存在而不是字符串的元素不合规
+    for bad in [r#","target":null"#, r#","target":1"#] {
+        assert!(object::parse(entry(bad).as_bytes()).is_err(), "{bad}");
+    }
     for bad in [
         "not json",
         r#"{"format_version":2,"org":"default","rule":"r1","evaluations":[]}"#,
         r#"{"format_version":0,"org":"default","rule":"r1","evaluations":[]}"#,
         r#"{"format_version":1.0,"org":"default","rule":"r1","evaluations":[]}"#,
         r#"{"org":"default","rule":"r1","evaluations":[]}"#,
-        r#"{"format_version":1,"org":"default","rule":"r1","evaluations":[],"x":1}"#,
         r#"{"format_version":1,"org":"default","rule":"r1","evaluations":[{"scheduled_at":1}]}"#,
         r#"{"format_version":1,"org":1,"rule":"r1","evaluations":[]}"#,
     ] {
         assert!(object::parse(bad.as_bytes()).is_err(), "{bad}");
     }
+}
+
+/// 缺 `target` 的旧元素续写时原样保留、不补写；对象与元素中未定义的字段不写回（REQ-AMB-ALR-EVALUATIONS-V2-RESUME）。
+#[test]
+fn old_entries_keep_their_fields_and_undefined_fields_are_dropped() {
+    let old = r#"{"format_version":1,"org":"default","rule":"r1","note":"n","evaluations":[{"scheduled_at":1,"started_at":null,"finished_at":2,"window_start":0,"window_end":1,"outcome":"skipped","reason":"previous_running","matched_rows":null,"truncated":null,"delivery":"not_attempted","attempts":0,"last_http_status":null,"extra":true}]}"#;
+    let doc = object::parse(old.as_bytes()).unwrap();
+    assert_eq!(doc.evaluations[0].target, None);
+    let merged = object::merge(&doc.evaluations, &[object::Entry::of(&matched("r1", H))]);
+    let v: serde_json::Value =
+        serde_json::from_slice(&object::encode("default", "r1", &merged)).unwrap();
+    assert_eq!(v.as_object().unwrap().len(), 4);
+    let e0 = v["evaluations"][0].as_object().unwrap();
+    assert_eq!(e0.len(), 12);
+    assert!(!e0.contains_key("target") && !e0.contains_key("extra"));
+    assert_eq!(v["evaluations"][1]["target"], "default/app");
 }
 
 #[test]

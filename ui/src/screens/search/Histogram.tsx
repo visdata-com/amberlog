@@ -1,7 +1,10 @@
-// 分布图（REQ-AMB-UI-SEARCH-HIST-DRAW、HIST-TOOLTIP、HIST-ZOOM）：每个分桶一根柱，同色；点一根柱或拖选几根缩放。
+// 分布图（REQ-AMB-UI-SEARCH-V4-HIST-DRAW、HIST-TOOLTIP、HIST-ZOOM）：每个分桶一根柱，同色（全部为零时照画零高的柱）；
+// 点一根柱或拖选几根缩放。柱的提示写分桶起点的完整时刻与 `n` 的原始文本；坐标轴刻度与范围文字是时刻摘要
+// （REQ-AMB-UI-CONSOLE-V4-TIME-SUMMARY），范围文字悬停可见完整时刻。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useStore } from "../../lib/store.ts";
+import { formatLocal } from "../../lib/time.ts";
 import { settings } from "../../shell/settings.ts";
 import { type Bar, heights } from "./chart.ts";
 import { zoomRange } from "./histogram.ts";
@@ -26,8 +29,8 @@ export function Histogram({ name, bars, interval, range, onZoom }: HistogramProp
   const tooltip = useRef<HTMLDivElement>(null);
   const columns = useRef<(HTMLDivElement | null)[]>([]);
   const labels = useMemo(() => bars.map((b) => {
-    const [start, end] = zoomRange(b.start, b.start, interval, zoneOf(timezone), range);
-    return { start, end, text: histogramTime(start, timezone) + " 至 " + histogramTime(end, timezone) + "，" + b.n + " 条日志" };
+    const [, end] = zoomRange(b.start, b.start, interval, zoneOf(timezone), range);
+    return { end, text: formatLocal(b.start, timezone) + "  " + b.n + " 条" };
   }), [bars, interval, range, timezone]);
   const active = hover !== null && bars[hover.index] === hover.bar ? hover : null;
   const span = active === null ? null : labels[active.index]!;
@@ -68,7 +71,9 @@ export function Histogram({ name, bars, interval, range, onZoom }: HistogramProp
     <div class="hist">
       <div class="hist-header">
         <span class="hist-title">日志时间分布</span>
-        <span class="hist-range">{histogramTime(range[0], timezone) + " → " + histogramTime(range[1], timezone) + " · " + timezone}</span>
+        <span class="hist-range" title={formatLocal(range[0], timezone) + " → " + formatLocal(range[1], timezone)}>
+          {histogramTime(range[0], timezone) + " → " + histogramTime(range[1], timezone) + " · " + timezone}
+        </span>
       </div>
       <div class="hbars" onPointerLeave={() => { setDrag(null); setHover(null); }} onPointerCancel={() => { setDrag(null); setHover(null); }}>
         {bars.map((b, i) => {
@@ -148,11 +153,11 @@ export function Histogram({ name, bars, interval, range, onZoom }: HistogramProp
           style={{ left: position.left + "px", top: position.top + "px" }}
         >
           <div class="hist-tooltip__range">
-            <span>开始</span><span>{histogramTime(span.start, timezone)}</span>
-            <span>结束</span><span>{histogramTime(span.end, timezone)}</span>
+            <span>开始</span><span class="hist-tooltip__start">{formatLocal(active.bar.start, timezone)}</span>
+            <span>结束</span><span>{formatLocal(span.end, timezone)}</span>
           </div>
-          <div class="hist-tooltip__count"><span>日志条数</span><strong>{/^\d+$/.test(active.bar.n) ? BigInt(active.bar.n).toLocaleString("en-US") : active.bar.n} 条</strong></div>
-          <div class="hist-tooltip__zone">{histogramZone(span.start, span.end, timezone)}</div>
+          <div class="hist-tooltip__count"><span>日志条数</span><strong>{active.bar.n} 条</strong></div>
+          <div class="hist-tooltip__zone">{histogramZone(active.bar.start, span.end, timezone)}</div>
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-//! REQ-AMB-DM-NAMESPACE-V2 的系统测试：以子进程运行 `amberlog`，
+//! REQ-AMB-DM-NAMESPACE-V3 的系统测试：以子进程运行 `amberlog`，
 //! 对象存储用 `file://` 临时目录，经 `_json` 摄取、经 `_search` 查询。
 //!
 //! 「对象存储不可达」以目录权限注入（`file://` 根目录置为 000）；「WAL 目录不可写」用 `TESTBED_FAULT_WAL` 注入点；
@@ -173,6 +173,31 @@ fn namespace_stream_autocreate_via_sent() {
     let r = sent(&server, "app9", &format!("[{}]", sent_element("a", w, 1)));
     assert_eq!(r.status, 200, "{}", r.text());
     search(&server, "SELECT * FROM app9");
+}
+
+/// REQ-AMB-DM-NAMESPACE-V3：已有 1000 个 stream 时，第 1001 个仍照常自动创建（不设 stream 个数的上限）。
+/// 1001 个请求依次发出，失败时指出是第几个。
+#[test]
+fn namespace_autocreate_no_count_limit() {
+    let fx = Fixture::new();
+    let server = fx.start(&[]);
+    for i in 1..=1000 {
+        let path = format!("/api/default/s{i:04}/_json");
+        let r = post(&server, &path, r#"[{"a":1}]"#);
+        assert_eq!(r.status, 200, "第 {i} 个请求 {path}：{}", r.text());
+    }
+    let w = minute_of(now_us());
+    let r = sent(&server, "s1001", &format!("[{}]", sent_element("a", w, 1)));
+    assert_eq!(r.status, 200, "第 1001 个请求：{}", r.text());
+    for stream in ["s0001", "s1000"] {
+        let hits = search(&server, &format!("SELECT a FROM {stream}"));
+        assert!(
+            hits.iter().any(|h| h["a"] == 1),
+            "{stream} 查不到 a 为 1 的记录：{hits:?}"
+        );
+    }
+    let r = search_resp(&server, "SELECT * FROM s1001");
+    assert_eq!(r.status, 200, "{}", r.text());
 }
 
 #[test]

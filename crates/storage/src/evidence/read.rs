@@ -124,7 +124,7 @@ pub fn rel_of(prefix: &Path, path: &Path) -> Option<String> {
     (!rest.is_empty()).then(|| rest.join("/"))
 }
 
-/// 数据集 `dataset` 在对象存储中是否存在（REQ-AMB-DM-NAMESPACE-V2：其 `manifest/` 下有提示或符合快照路径模板的对象）。
+/// 数据集 `dataset` 在对象存储中是否存在（REQ-AMB-DM-NAMESPACE-V3：其 `manifest/` 下有提示或符合快照路径模板的对象）。
 /// 只发一次列举请求（离线子命令的对象存储读取探测，REQ-AMB-CFG-STARTUP-V7）。
 pub async fn dataset_exists(store: &Store, dataset: &Dataset) -> Result<bool, Unavailable> {
     let listed = store

@@ -15,7 +15,7 @@ use common::api::{
 use common::lake::{COLD_TTL, COLD_TTL_OFFSET_S, RETIRE_OFFSET_S};
 use common::s3::S3Instance;
 use common::store::{
-    Ds, FLUSH_1S, H10, HOUR, Remote, bucket_label, commits_total, hour_of, ingest_times,
+    Ds, FLUSH_1S, H10, HOUR, Remote, bucket_label, commits_total, hour_of, ingest_times, metric,
     parquet_column, parquet_columns, parquet_timestamps, sha256, snapshot_rel, wait_snapshots_gone,
 };
 use common::{Fixture, Kv, Server};
@@ -656,6 +656,31 @@ fn layout_readers_ignore_unknown_fields() {
         .collect();
     assert_eq!(hits, BTreeSet::from(["a".into(), "b".into()]));
     ingest_ok(&server, "uf", r#"[{"k":"c"}]"#);
+}
+
+/// 运行中存储目录被移走：写入只建存储目录之下缺的目录，不建存储目录本身，就绪探测的写入按对象存储不可访问处置
+/// （REQ-AMB-STO-HOT-LAYOUT-V8「对象存储不可访问」，REQ-AMB-OBS-HEALTH-METRICS-V7）。35 秒为就绪探测间隔上限 30 秒加余量。
+#[test]
+fn layout_file_root_removed_not_recreated() {
+    let fx = Fixture::new();
+    let server = restart(&fx, &[]);
+    let d = fx.store_dir();
+    std::fs::rename(&d, fx.root().join("moved")).unwrap();
+    let start = Instant::now();
+    let mut unready = None;
+    while start.elapsed() < Duration::from_secs(35) {
+        assert!(!d.exists(), "改名后 {:?} 存储目录又出现了", start.elapsed());
+        if unready.is_none() && server.get("/readyz").status == 503 {
+            unready = Some((start.elapsed(), metric(&server, "amberlog_ready")));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let (at, ready) = unready.expect("改名后 35 秒内 /readyz 没有返回 503");
+    assert_eq!(
+        ready,
+        Some(0.0),
+        "/readyz 于 {at:?} 返回 503 时 amberlog_ready 不为 0"
+    );
 }
 
 // ---------------------------------------------------------------------------

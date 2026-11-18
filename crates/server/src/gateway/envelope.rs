@@ -58,6 +58,14 @@ impl ApiError {
         }
     }
 
+    /// 403 `forbidden`：主体持有有效凭据，而没有所请求操作的权限（REQ-AMB-AUTH-AUTHZ-FORBIDDEN-RESPONSE）。
+    pub fn forbidden() -> Self {
+        ApiError::new(
+            Reason::Forbidden,
+            "the credential is valid but lacks the permission for this request",
+        )
+    }
+
     /// 出错原因的原文（底层错误的文本）：只写进这个响应的 `error` 日志，不进响应体。
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
         self.cause = Some(cause.into());
@@ -85,7 +93,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.body.code).expect("Reason::status 只返回闭集内的状态码");
-        let unauthorized = self.body.reason == Reason::Unauthorized;
+        // 401 带 `Bearer`；403 带 `insufficient_scope`（RFC 6750 §3.1，REQ-AMB-ERR-ENVELOPE-V8）
+        let challenge = match self.body.reason {
+            Reason::Unauthorized => Some("Bearer"),
+            Reason::Forbidden => Some(r#"Bearer error="insufficient_scope""#),
+            _ => None,
+        };
         let mark = Enveloped {
             code: self.body.code,
             reason: self.body.reason,
@@ -95,9 +108,11 @@ impl IntoResponse for ApiError {
         };
         // axum 的 Json 响应头为 `application/json`，不带参数。
         let mut res = (status, Json(self.body)).into_response();
-        if unauthorized {
-            res.headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        if let Some(challenge) = challenge {
+            res.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static(challenge),
+            );
         }
         if let Some(allow) = self.allow {
             res.headers_mut().insert(header::ALLOW, allow);

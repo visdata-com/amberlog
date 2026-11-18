@@ -332,8 +332,10 @@ pub trait ColdReader: Send + Sync {
 
     /// 按字段编号逐批读一个冷层数据文件：每批的 schema 恰为 `target`，其每列按该列 `PARQUET:field_id` 元数据对到文件中
     /// 同一字段编号的列，文件中没有的为空值（REQ-AMB-STO-COLD-TABLE、REQ-AMB-QRY-CROSS-TIER）。只需解码 `target` 所含的
-    /// 列；`time`（UTC 微秒，左闭右开）之外的记录可以不交出，也可以照常交出（由调用方过滤）。打开时的失败在返回之前
-    /// 报出，解码中途的失败作为迭代中的一项报出。
+    /// 列；`time`（UTC 微秒，左闭右开）之外的记录可以不交出，也可以照常交出（由调用方过滤）。文件中没有要读的行组
+    /// （`_timestamp` 上下界都与 `time` 不相交）时为 `None`，即不读任何行组数据，该文件不算被扫描
+    /// （REQ-AMB-QRY-SEARCH-ENDPOINT-V10、REQ-AMB-QRY-CROSS-TIER-V2）。打开时的失败在返回之前报出，解码中途的失败作为
+    /// 迭代中的一项报出。
     fn read_file<'a>(
         &'a self,
         dataset: &'a Dataset,
@@ -341,7 +343,7 @@ pub trait ColdReader: Send + Sync {
         file: &'a ColdDataFile,
         target: SchemaRef,
         time: Range<i64>,
-    ) -> BoxFuture<'a, Result<ColdBatches, ColdReadError>>;
+    ) -> BoxFuture<'a, Result<Option<ColdBatches>, ColdReadError>>;
 }
 
 /// 一次入湖要写进冷层的内容（REQ-AMB-STO-LAKE-ENTRY）。

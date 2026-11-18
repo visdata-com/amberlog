@@ -11,7 +11,7 @@ use amberlog_common::dataset::Dataset;
 use amberlog_ingest::pipeline::Pipeline;
 use amberlog_ingest::timestamp::TimestampWindow;
 use amberlog_server::api::ingest::{JsonIngest, json_routes};
-use amberlog_server::config::Auth;
+use amberlog_server::authz::Authz;
 use amberlog_server::gateway::{self, AppState};
 use amberlog_server::telemetry::{Health, Metrics};
 use amberlog_storage::gate::{DatasetGates, DatasetState};
@@ -53,9 +53,7 @@ fn world(max_body_bytes: u64) -> World {
     let state = AppState {
         health: Arc::new(Health::new(std::env::temp_dir(), "file:///unused".into())),
         metrics: metrics.clone(),
-        auth: Arc::new(Auth::Enabled {
-            token: TOKEN.into(),
-        }),
+        authz: Arc::new(Authz::with_token(TOKEN)),
     };
     let module = json_routes(JsonIngest {
         pipeline,

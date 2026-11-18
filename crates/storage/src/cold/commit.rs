@@ -455,8 +455,13 @@ impl Committer {
         };
         let parent = base.current_snapshot().cloned();
         let sequence_number = base.last_sequence_number() + 1;
-        let parent_manifests = match &parent {
-            Some(s) => manifests::manifest_list(&self.store, &self.layout, dataset, s).await?,
+        // 新增与沿用条目数都为 0 的清单（只含已删除条目）不再沿用；计数缺失按非 0 计（REQ-AMB-STO-COLD-TABLE-V3 第 45 条）
+        let parent_manifests: Vec<ManifestFile> = match &parent {
+            Some(s) => manifests::manifest_list(&self.store, &self.layout, dataset, s)
+                .await?
+                .into_iter()
+                .filter(|m| m.has_added_files() || m.has_existing_files())
+                .collect(),
             None => Vec::new(),
         };
 

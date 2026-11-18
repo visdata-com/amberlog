@@ -10,6 +10,7 @@ use common::api::{
     FLUSH_1H, HOUR_US, MINUTE_US, counter_file, ingest_ok, now_us, poll, search_resp, sent,
     sent_element,
 };
+use common::authz::{self, ServiceToken, token_entry};
 use common::gov::{
     committed, entry, first_bucket_manifest, query, query_ok, rfc3339, write_counter_bytes,
     write_counters,
@@ -595,4 +596,158 @@ fn gov_ledger_silent_sources_exclude_backfilling() {
     for k in SUMMARY_KEYS {
         assert!(row.get(k).is_some(), "{k}: {row}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// visibility — 按主体过滤（REQ-AMB-GOV-LEDGER-V4）
+// ---------------------------------------------------------------------------
+
+/// 以凭据 `bearer`、时间范围 `[start, end)` 查询 `sql`，返回应答（不论状态码）。
+fn query_as(s: &Server, bearer: &str, sql: &str, (start, end): (i64, i64)) -> common::Resp {
+    let body = json!({"query": {"sql": sql, "start_time": start, "end_time": end, "size": 10000}});
+    s.request(
+        "POST",
+        "/api/default/_search",
+        &[("Authorization", bearer)],
+        body.to_string().as_bytes(),
+    )
+}
+
+/// 同 [`query_as`]，断言 200，返回 `hits`。
+fn hits_as(s: &Server, bearer: &str, sql: &str, range: (i64, i64)) -> Vec<Value> {
+    let r = query_as(s, bearer, sql, range);
+    assert_eq!(r.status, 200, "{sql}：{}", r.text());
+    r.json()["hits"].as_array().unwrap().clone()
+}
+
+#[test]
+fn ledger_rows_visible_only() {
+    let fx = Fixture::new();
+    let (q, g) = (ServiceToken::generate(), ServiceToken::generate());
+    let s = authz::start(
+        &fx,
+        &[
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app_*"] }]"#),
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["hr"] }]"#,
+            ),
+        ],
+        &[],
+    );
+    for st in ["app_web", "app_db", "hr", "web"] {
+        ingest_ok(&s, st, r#"[{"a":1}]"#);
+    }
+    let range = around_now();
+    assert_eq!(
+        hits_as(&s, &q.bearer(), "SELECT dataset FROM _ledger", range),
+        [
+            json!({"dataset": "default/app_db"}),
+            json!({"dataset": "default/app_web"})
+        ]
+    );
+    assert_eq!(
+        hits_as(&s, &q.bearer(), "SELECT count(*) AS n FROM _ledger", range),
+        [json!({"n": 2})]
+    );
+    assert_eq!(
+        hits_as(&s, &g.bearer(), "SELECT dataset FROM _ledger", range),
+        [json!({"dataset": "default/hr"})]
+    );
+    assert_eq!(
+        query_ok(&s, "SELECT count(*) AS n FROM _ledger", range),
+        [json!({"n": 4})]
+    );
+}
+
+#[test]
+fn ledger_named_invisible_empty() {
+    let fx = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &fx,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app"] }]"#,
+        )],
+        &[],
+    );
+    for st in ["app", "hr"] {
+        ingest_ok(&s, st, r#"[{"a":1}]"#);
+    }
+    for d in ["default/hr", "default/nope"] {
+        let sql = format!("SELECT * FROM _ledger WHERE dataset = '{d}'");
+        assert_eq!(
+            hits_as(&s, &q.bearer(), &sql, around_now()),
+            Vec::<Value>::new(),
+            "{d}"
+        );
+    }
+}
+
+/// 热层巡检推迟到 24 小时后、此后不对 `hr` 发请求：`hr` 的链尾与计数对象只可能被这次台账查询读到。
+#[test]
+fn ledger_invisible_objects_not_read() {
+    let fx = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &fx,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app"] }]"#,
+        )],
+        &[
+            ("flush.max_records", Some("1")),
+            ("hot_fsck.interval", Some("\"24h\"")),
+        ],
+    );
+    let hour = {
+        let now = now_us();
+        now - now.rem_euclid(HOUR_US)
+    };
+    for st in ["app", "hr"] {
+        ingest_ok(&s, st, r#"[{"a":1}]"#);
+    }
+    for st in ["app", "hr"] {
+        let ds = fx.dataset(st);
+        let (_, done) = poll(
+            Duration::from_secs(20),
+            || ds.current().is_some() && counter_file(&fx, st, hour).exists(),
+            |d| *d,
+        );
+        assert!(done, "{st} 20 秒内未提交或未写出计数对象");
+    }
+    write_counter_bytes(&fx, "hr", hour, b"not json");
+    // 模拟更高版本的写方：写出 format_version 为 3 的下一个快照，使它成为链尾
+    fx.dataset("hr")
+        .append_snapshot(|next| next["format_version"] = json!(3));
+    let range = (now_us() - HOUR_US, now_us() + 1_000_000);
+    let hits = hits_as(
+        &s,
+        &q.bearer(),
+        "SELECT dataset, status, reconciliation FROM _ledger",
+        range,
+    );
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["dataset"], "default/app");
+    assert_eq!(hits[0]["status"], "active");
+    assert_ne!(hits[0]["reconciliation"], "unknown", "{hits:?}");
+    let metrics = s.get_auth("/metrics").text();
+    assert!(
+        !metrics
+            .lines()
+            .any(|l| l.starts_with("amberlog_dataset_disabled{") && l.contains("stream=\"hr\"")),
+        "{metrics}"
+    );
+    assert_eq!(
+        query_ok(
+            &s,
+            "SELECT dataset, status FROM _ledger WHERE dataset = 'default/hr'",
+            range
+        ),
+        [json!({"dataset": "default/hr", "status": "disabled_format_version"})]
+    );
 }

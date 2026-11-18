@@ -39,34 +39,29 @@ function normalizeUiEntry(): Plugin {
 
 export default defineConfig(({ mode, envDir = root }: ConfigEnv & { envDir?: string }) => {
   const env = loadEnv(mode, envDir, "UI_BACKEND_URL");
-  const target = backendTarget(process.env.UI_BACKEND_URL ?? env.UI_BACKEND_URL ?? process.env.AMBERLOG_API_ORIGIN);
+  const target = backendTarget(process.env.UI_BACKEND_URL ?? env.UI_BACKEND_URL);
   return {
     root,
     base: "/ui/",
     envDir,
     // The proxy target is server configuration, not a browser environment variable.
-    envPrefix: "AMBERLOG_UI_PUBLIC_UNUSED_",
+    // No variable read by the UI tooling starts with AMBERLOG_: `amberlog serve` exits with code 2 on
+    // unknown AMBERLOG_* variables, and developers often run both from the same shell (ADR-0060 item 9).
+    envPrefix: "UI_PUBLIC_UNUSED_",
+    publicDir: false,
     cacheDir: fileURLToPath(new URL("./node_modules/.vite", import.meta.url)),
     plugins: [preact({ reactAliasesEnabled: false }), normalizeUiEntry()],
     build: {
+      // 产物由 build.mjs 按入口逐个构建、内联成单个自包含 HTML（ADR-0060 第 2 条）：不分块、不出资源文件。
       target: "es2022",
-      manifest: true,
       sourcemap: false,
-      rollupOptions: {
-        output: {
-          // Keep runtime dependencies stable while application modules change.
-          manualChunks(id) {
-            if (!id.includes("/node_modules/")) return undefined;
-            if (/(^|\/)node_modules\/preact(?:\/|$)/.test(id)) return "vendor-preact";
-            if (/(^|\/)node_modules\/preact-iso(?:\/|$)/.test(id)) return "vendor-preact-iso";
-            return "vendor";
-          },
-        },
-      },
+      cssCodeSplit: false,
+      modulePreload: false,
+      assetsInlineLimit: Number.MAX_SAFE_INTEGER,
     },
     server: {
-      host: process.env.AMBERLOG_UI_DEV_HOST ?? "127.0.0.1",
-      port: Number(process.env.AMBERLOG_UI_DEV_PORT ?? "5173"),
+      host: process.env.UI_DEV_HOST ?? "127.0.0.1",
+      port: Number(process.env.UI_DEV_PORT ?? "5173"),
       strictPort: true,
       fs: { strict: true, allow: [root] },
       proxy: {

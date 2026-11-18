@@ -9,6 +9,7 @@ mod common;
 use std::time::Duration;
 
 use common::api::{FLUSH_1H, ingest_ok};
+use common::authz::{self, ServiceToken, assert_same_as_absent, token_entry};
 use common::store::snapshot_rel;
 use common::{BEARER, Fixture, Resp, Server, gov};
 use serde_json::{Value, json};
@@ -288,4 +289,83 @@ fn fields_stream_not_found() {
     let f = Fixture::new();
     let s = f.start(&[]);
     assert_envelope(&fields_resp(&s, "nope"), 400, "stream_not_found");
+}
+
+// ---- 授权（REQ-AMB-QRY-FIELDS-V2） ----
+
+/// 以凭据 `bearer` 请求 `stream` 的字段列表。
+fn fields_as(s: &Server, bearer: &str, stream: &str) -> Resp {
+    s.request(
+        "GET",
+        &format!("/api/default/{stream}/_fields"),
+        &[("Authorization", bearer)],
+        b"",
+    )
+}
+
+#[test]
+fn fields_authz_out_of_scope_as_absent() {
+    let f = Fixture::new();
+    gov::committed(&f, &[("hr_old", r#"[{"a":1}]"#)]);
+    let ds = f.dataset("hr_old");
+    let n = ds.current().expect("当前快照存在");
+    let mut snap = ds.snapshot(n);
+    snap["format_version"] = json!(3);
+    ds.write_json(&snapshot_rel(n), &snap);
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    let q = q.bearer();
+    let r1 = fields_as(&s, &q, "hr_audit");
+    ingest_ok(&s, "hr_audit", r#"[{"a":1}]"#);
+    let r2 = fields_as(&s, &q, "hr_audit");
+    assert_envelope(&r1, 400, "stream_not_found");
+    assert_same_as_absent(&r2, &r1);
+    assert_envelope(&fields_as(&s, &q, "hr_old"), 400, "stream_not_found");
+    assert_envelope(
+        &fields_resp(&s, "hr_old"),
+        503,
+        "unsupported_format_version",
+    );
+}
+
+#[test]
+fn fields_authz_no_querier_forbidden() {
+    let f = Fixture::new();
+    let (g, w) = (ServiceToken::generate(), ServiceToken::generate());
+    let s = authz::start(
+        &f,
+        &[
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+            ),
+            token_entry("w", &w, r#"[{ role = "writer", streams = ["*"] }]"#),
+        ],
+        &[],
+    );
+    ingest_ok(&s, "app", r#"[{"a":1}]"#);
+    for t in [&g, &w] {
+        for stream in ["app", "nope"] {
+            let r = fields_as(&s, &t.bearer(), stream);
+            assert_envelope(&r, 403, "forbidden");
+            assert_eq!(
+                r.header("www-authenticate"),
+                Some(r#"Bearer error="insufficient_scope""#)
+            );
+        }
+    }
+    assert_envelope(
+        &fields_as(&s, &g.bearer(), "Bad"),
+        400,
+        "invalid_stream_name",
+    );
 }

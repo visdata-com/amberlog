@@ -1,4 +1,5 @@
-//! 测试用替身：[`DataFiles`]、[`CounterObjects`]、[`BucketStates`] 与 [`AlertHistory`] 的内存实现。
+//! 测试用替身：[`DataFiles`]、[`CounterObjects`]、[`BucketStates`] 与 [`AlertHistory`] 的内存实现，以及范围受限的主体
+//! [`ScopedViewer`]。
 //!
 //! 只在本 crate 的测试与打开 `testing` feature 的构建里编入；其他 crate 在 `[dev-dependencies]` 里打开它。
 
@@ -16,6 +17,7 @@ use crate::system::{
     AlertHistory, BucketStates, CounterError, CounterObjects, CounterWindow, EvaluationRow,
     Governance, HistoryError,
 };
+use crate::viewer::{Decision, Target, Viewer};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().expect("替身的锁未中毒")
@@ -69,7 +71,7 @@ impl DataFiles for FakeFiles {
         file: &'a FileEntry,
         columns: &'a [String],
         _time: std::ops::Range<i64>,
-    ) -> BoxFuture<'a, Result<FileBatches, FileError>> {
+    ) -> BoxFuture<'a, Result<Option<FileBatches>, FileError>> {
         lock(&self.reads).push(file.path.clone());
         lock(&self.columns).push(columns.to_vec());
         let tail = lock(&self.tails).get(&file.path).cloned();
@@ -82,8 +84,9 @@ impl DataFiles for FakeFiles {
                     file.path
                 )))
             });
+        // 替身不按时间选行组：预设的文件总有要读的行组
         let r = r.map(|batches| {
-            Box::new(batches.into_iter().map(Ok).chain(tail.map(Err))) as FileBatches
+            Some(Box::new(batches.into_iter().map(Ok).chain(tail.map(Err))) as FileBatches)
         });
         Box::pin(std::future::ready(r))
     }
@@ -328,4 +331,83 @@ pub fn governance() -> (
 /// 默认配置下的执行名额与单查询内存上限（`query.max_concurrency` 4、`query.max_memory_bytes` 512 MiB）。
 pub fn admission() -> Arc<crate::limits::Admission> {
     Arc::default()
+}
+
+/// 范围受限的主体：`querier` 为查询者的范围（数据集名，精确匹配），`governance` 为治理查看者的范围；两者都空的角色视为
+/// 没有该角色。不做前缀匹配与管理员（范围的匹配在接入面的授权模块，这里只替它给出结论）。
+#[derive(Debug, Default)]
+pub struct ScopedViewer {
+    pub querier: Option<Vec<String>>,
+    pub governance: Option<Vec<String>>,
+    /// 对查询者与治理查看者的范围为全部。
+    pub all: bool,
+    /// 请求体一步被问到的对象（数据集标识或系统表名），按先后。
+    asked: Mutex<Vec<String>>,
+}
+
+impl ScopedViewer {
+    /// 查询者，范围为 `streams`。
+    pub fn querier(streams: &[&str]) -> Self {
+        ScopedViewer {
+            querier: Some(streams.iter().map(|s| (*s).to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// 只有治理查看者角色，范围为 `streams`。
+    pub fn governance(streams: &[&str]) -> Self {
+        ScopedViewer {
+            governance: Some(streams.iter().map(|s| (*s).to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// 对查询者与治理查看者的范围为全部（只有查询者角色）。
+    pub fn all() -> Self {
+        ScopedViewer {
+            querier: Some(Vec::new()),
+            all: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn asked(&self) -> Vec<String> {
+        lock(&self.asked).clone()
+    }
+}
+
+impl Viewer for ScopedViewer {
+    fn decide(&self, target: Target<'_>) -> Decision {
+        match target {
+            Target::System(name) => {
+                lock(&self.asked).push(name.to_owned());
+                if self.querier.is_some() || self.governance.is_some() || self.all {
+                    Decision::Allow
+                } else {
+                    Decision::Forbidden
+                }
+            }
+            Target::Stream(d) => {
+                lock(&self.asked).push(d.to_string());
+                match &self.querier {
+                    None if !self.all => Decision::Forbidden,
+                    _ if self.all => Decision::Allow,
+                    Some(q) if q.contains(&d.stream) => Decision::Allow,
+                    _ => Decision::Absent,
+                }
+            }
+        }
+    }
+
+    fn sees(&self, dataset: &Dataset) -> bool {
+        self.all
+            || [&self.querier, &self.governance]
+                .into_iter()
+                .flatten()
+                .any(|s| s.contains(&dataset.stream))
+    }
+
+    fn sees_all(&self) -> bool {
+        self.all
+    }
 }

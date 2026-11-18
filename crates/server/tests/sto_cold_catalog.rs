@@ -22,6 +22,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::api::{ingest, now_us, poll};
+use common::authz::{self, ServiceToken, assert_same_as_absent, token_entry};
 use common::lake::ColdDir;
 use common::s3::{self, S3Instance};
 use common::store::{HOUR, hour_of, metric, snapshot_rel, stop};
@@ -1310,4 +1311,382 @@ fn cold_catalog_requests_metric() {
     for (b, a) in before.iter().zip(&after) {
         assert_eq!(*a, b + 1.0, "{before:?} → {after:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 授权（REQ-AMB-STO-COLD-CATALOG-V2）：表的存在按主体、目录范围、403、只读目录进程的授权文件
+// ---------------------------------------------------------------------------
+
+/// 各端点的 `{prefix}` 之后的路径。
+const NS: &str = "/iceberg/v1/amberlog/namespaces";
+const NS_DEFAULT: &str = "/iceberg/v1/amberlog/namespaces/default";
+const TABLE_APP_A: &str = "/iceberg/v1/amberlog/namespaces/default/tables/app_a";
+const TABLE_HR_AUDIT: &str = "/iceberg/v1/amberlog/namespaces/default/tables/hr_audit";
+
+/// 以凭据 `token` 请求。
+fn call_as(s: &Server, token: &ServiceToken, method: &str, path: &str) -> Resp {
+    s.request(
+        method,
+        path,
+        &[("Authorization", token.bearer().as_str())],
+        b"",
+    )
+}
+
+/// 写授权文件（W 与 C 共用），返回 `auth.authz_file` 的取值。
+fn authz_file(env: &Env, entries: &[String]) -> String {
+    authz::authz_file_value(&authz::write(&env.f, entries))
+}
+
+/// 把授权文件文本写成夹具目录下的 `name`，返回 `auth.authz_file` 的取值（第二份授权文件用）。
+fn authz_file_named(env: &Env, name: &str, entries: &[String]) -> String {
+    let p = env.f.root().join(name);
+    std::fs::write(&p, authz::file_text(entries)).unwrap();
+    authz::authz_file_value(&p)
+}
+
+/// 「stream 都已入湖」：先向每个 stream 摄取，再等各自出现冷层版本（至多 10 分钟）。
+fn laked_all(env: &Env, w: &Server, streams: &[&str]) {
+    for st in streams {
+        ingest_hours_ago(w, st, 3);
+    }
+    for st in streams {
+        let cold = env.cold(st);
+        let (_, ok) = poll(LAKE_WAIT, || cold.version().unwrap_or(0), |n| *n > 0);
+        assert!(ok, "{st} 没有入湖：{:#?}", w.stderr_lines());
+    }
+}
+
+/// 列表响应体 `identifiers` 中的表名（依次）。
+fn table_names(v: &Value) -> Vec<String> {
+    v["identifiers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("没有 identifiers：{v}"))
+        .iter()
+        .map(|i| i["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn cold_catalog_authz_lists_only_scope() {
+    let env = Env::new();
+    let (q, r) = (ServiceToken::generate(), ServiceToken::generate());
+    let file = authz_file(
+        &env,
+        &[
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app_*"] }]"#),
+            token_entry(
+                "r",
+                &r,
+                r#"[{ role = "catalog_reader", streams = ["hr_*"] }]"#,
+            ),
+        ],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a", "app_b", "hr_audit"]);
+    let c = env.c(&kv);
+    let c0 = env.c(&[
+        ("auth.authz_file", Some(file.as_str())),
+        ("auth.enabled", Some("false")),
+        ("auth.token", None),
+    ]);
+
+    let by_q = ok_json(&call_as(&c, &q, "GET", T));
+    let by_r = ok_json(&call_as(&c, &r, "GET", T));
+    let by_admin = ok_json(&get(&c, T));
+    ok_json(&call_as(&c, &q, "GET", TABLE_APP_A));
+    let by_c0 = ok_json(&c0.request("GET", T, &[], b""));
+
+    assert_eq!(
+        by_q,
+        json!({"identifiers":[{"namespace":["default"],"name":"app_a"},{"namespace":["default"],"name":"app_b"}]})
+    );
+    assert_eq!(
+        by_r,
+        json!({"identifiers":[{"namespace":["default"],"name":"hr_audit"}]})
+    );
+    for v in [&by_admin, &by_c0] {
+        assert_eq!(table_names(v), ["app_a", "app_b", "hr_audit"], "{v}");
+    }
+}
+
+#[test]
+fn cold_catalog_authz_namespace_absent_without_scope() {
+    let env = Env::new();
+    let r = ServiceToken::generate();
+    let file = authz_file(
+        &env,
+        &[token_entry(
+            "r",
+            &r,
+            r#"[{ role = "catalog_reader", streams = ["web_*"] }]"#,
+        )],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a"]);
+    let c = env.c(&kv);
+
+    assert_eq!(
+        ok_json(&call_as(&c, &r, "GET", NS)),
+        json!({"namespaces": []})
+    );
+    no_such_namespace(&call_as(&c, &r, "GET", NS_DEFAULT));
+    head_error(&call_as(&c, &r, "HEAD", NS_DEFAULT), 404);
+    no_such_namespace(&call_as(&c, &r, "GET", T));
+    no_such_namespace(&call_as(&c, &r, "GET", &format!("{NS}?parent=default")));
+}
+
+#[test]
+fn cold_catalog_authz_out_of_scope_same_as_absent() {
+    let env = Env::new();
+    let q = ServiceToken::generate();
+    let file = authz_file(
+        &env,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a", "hr_audit"]);
+    let c = env.c(&kv);
+    let nope = format!("{T}/app_nope");
+
+    let get_hr = call_as(&c, &q, "GET", TABLE_HR_AUDIT);
+    let head_hr = call_as(&c, &q, "HEAD", TABLE_HR_AUDIT);
+    let get_nope = call_as(&c, &q, "GET", &nope);
+    let head_nope = call_as(&c, &q, "HEAD", &nope);
+
+    no_such_table(&get_nope);
+    assert_same_as_absent(&get_hr, &get_nope);
+    head_error(&head_nope, 404);
+    assert_same_as_absent(&head_hr, &head_nope);
+    ok_json(&get(&c, TABLE_HR_AUDIT));
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn cold_catalog_authz_chain_position() {
+    let env = Env::new();
+    let wt = ServiceToken::generate();
+    let file = authz_file(
+        &env,
+        &[token_entry(
+            "w",
+            &wt,
+            r#"[{ role = "writer", streams = ["*"] }]"#,
+        )],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a"]);
+    let c = env.c(&kv);
+
+    let r1 = c.request("GET", TABLE_APP_A, &[], b"");
+    let r2 = call_as(&c, &wt, "DELETE", NS_DEFAULT);
+    let r3 = call_as(&c, &wt, "GET", "/iceberg/v1/other/namespaces/default");
+    let r4 = call_as(&c, &wt, "GET", &format!("{NS}/Default"));
+    let r5 = call_as(&c, &wt, "GET", TABLE_APP_A);
+    env.faults_c("get,head _iceberg/default/app_a/metadata/ 403\nlist _iceberg/ 403");
+    let r6 = call_as(&c, &wt, "GET", TABLE_APP_A);
+
+    assert_eq!(r1.status, 401, "{r1:?}");
+    assert_eq!(r2.status, 405, "{r2:?}");
+    no_such_namespace(&r3);
+    no_such_namespace(&r4);
+    for r in [&r5, &r6] {
+        iceberg_error(r, 403, "ForbiddenException", "forbidden");
+    }
+}
+
+#[test]
+fn cold_catalog_authz_no_role_403() {
+    let env = Env::new();
+    let (wt, g) = (ServiceToken::generate(), ServiceToken::generate());
+    let file = authz_file(
+        &env,
+        &[
+            token_entry("w", &wt, r#"[{ role = "writer", streams = ["*"] }]"#),
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+            ),
+        ],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a"]);
+    let c = env.c(&kv);
+
+    let mut calls: Vec<(&ServiceToken, &str, &str)> = vec![
+        (&wt, "GET", "/iceberg/v1/config"),
+        (&wt, "GET", NS),
+        (&wt, "GET", NS_DEFAULT),
+        (&wt, "HEAD", NS_DEFAULT),
+        (&wt, "GET", T),
+        (&wt, "GET", TABLE_APP_A),
+        (&wt, "HEAD", TABLE_APP_A),
+    ];
+    calls.push((&g, "GET", "/iceberg/v1/config"));
+    for (token, method, path) in calls {
+        let r = call_as(&c, token, method, path);
+        assert_eq!(
+            r.header("www-authenticate"),
+            Some(r#"Bearer error="insufficient_scope""#),
+            "{method} {path}: {r:?}"
+        );
+        if method == "HEAD" {
+            head_error(&r, 403);
+        } else {
+            iceberg_error(&r, 403, "ForbiddenException", "forbidden");
+        }
+    }
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn cold_catalog_authz_out_of_scope_no_storage_read() {
+    let env = Env::new();
+    let q = ServiceToken::generate();
+    let file = authz_file(
+        &env,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a", "app_b", "hr_audit"]);
+    let c = env.c(&kv);
+
+    env.faults_c("get,head _iceberg/default/hr_audit/metadata/ 403");
+    let list_q = call_as(&c, &q, "GET", T);
+    let get_hr = call_as(&c, &q, "GET", TABLE_HR_AUDIT);
+    let list_admin = get(&c, T);
+    // 第二次注入不限于 `hr_audit`：全部冷层元数据的读取与冷层列举都失败
+    env.faults_c("get,head _iceberg/ 403\nlist _iceberg/ 403");
+    let get_hr2 = call_as(&c, &q, "GET", TABLE_HR_AUDIT);
+    let head_hr = call_as(&c, &q, "HEAD", TABLE_HR_AUDIT);
+    let get_app = call_as(&c, &q, "GET", TABLE_APP_A);
+
+    assert_eq!(
+        ok_json(&list_q),
+        json!({"identifiers":[{"namespace":["default"],"name":"app_a"},{"namespace":["default"],"name":"app_b"}]})
+    );
+    no_such_table(&get_hr);
+    no_such_table(&get_hr2);
+    head_error(&head_hr, 404);
+    iceberg_error(
+        &list_admin,
+        503,
+        "ServiceUnavailableException",
+        "unavailable",
+    );
+    iceberg_error(&get_app, 503, "ServiceUnavailableException", "unavailable");
+}
+
+#[test]
+fn cold_catalog_authz_process_own_file() {
+    let env = Env::new();
+    let q = ServiceToken::generate();
+    let w_file = authz_file(
+        &env,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app_*"] }]"#,
+        )],
+    );
+    let c2_file = authz_file_named(
+        &env,
+        "authz-c2.toml",
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "catalog_reader", streams = ["hr_*"] }]"#,
+        )],
+    );
+    let w = env.w(&[("auth.authz_file", Some(w_file.as_str()))]);
+    laked_all(&env, &w, &["app_a", "hr_audit"]);
+    let c2 = env.c(&[("auth.authz_file", Some(c2_file.as_str()))]);
+
+    assert_eq!(
+        ok_json(&call_as(&w, &q, "GET", T)),
+        json!({"identifiers":[{"namespace":["default"],"name":"app_a"}]})
+    );
+    assert_eq!(
+        ok_json(&call_as(&c2, &q, "GET", T)),
+        json!({"identifiers":[{"namespace":["default"],"name":"hr_audit"}]})
+    );
+}
+
+#[test]
+fn cold_catalog_authz_writer_file_on_catalog_process() {
+    let env = Env::new();
+    let (wt, g, q) = (
+        ServiceToken::generate(),
+        ServiceToken::generate(),
+        ServiceToken::generate(),
+    );
+    let file = authz_file(
+        &env,
+        &[
+            token_entry("w", &wt, r#"[{ role = "writer", streams = ["*"] }]"#),
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+            ),
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app_*"] }]"#),
+        ],
+    );
+    let kv: Vec<Kv> = vec![("auth.authz_file", Some(file.as_str()))];
+    let w = env.w(&kv);
+    laked_all(&env, &w, &["app_a", "hr_audit"]);
+    let c = env.c(&kv);
+    let post = |token: &ServiceToken, path: &str, body: &str| {
+        c.request(
+            "POST",
+            path,
+            &[("Authorization", token.bearer().as_str())],
+            body.as_bytes(),
+        )
+    };
+    let search = |sql: &str| {
+        json!({"query": {"sql": sql, "start_time": 0, "end_time": common::api::FAR_END_US}})
+            .to_string()
+    };
+
+    post(&wt, "/api/default/app_a/_json", r#"[{"k":1}]"#).assert_envelope(404, "not_found");
+    post(
+        &g,
+        "/api/default/_search",
+        &search("SELECT count(*) AS n FROM _ledger"),
+    )
+    .assert_envelope(404, "not_found");
+    post(
+        &q,
+        "/api/default/_search",
+        &search("SELECT count(*) AS n FROM app_a"),
+    )
+    .assert_envelope(404, "not_found");
+    for token in [&wt, &g] {
+        iceberg_error(
+            &call_as(&c, token, "GET", "/iceberg/v1/config"),
+            403,
+            "ForbiddenException",
+            "forbidden",
+        );
+    }
+    assert_eq!(
+        ok_json(&call_as(&c, &q, "GET", T)),
+        json!({"identifiers":[{"namespace":["default"],"name":"app_a"}]})
+    );
 }

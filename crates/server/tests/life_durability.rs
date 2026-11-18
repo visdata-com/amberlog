@@ -1,4 +1,4 @@
-//! REQ-AMB-LIFE-DURABILITY-V3 的系统测试：以子进程运行 `amberlog`，
+//! REQ-AMB-LIFE-DURABILITY-V5 的系统测试：以子进程运行 `amberlog`，
 //! 经 `_json` 摄取、经 `_search` 查询，发信号、改写 `wal.dir` 下的段文件、在 `fault-injection` 暂停点强杀来构造状态；
 //! 「对象存储不可达」经 [`S3Instance`] 的进程内转发关停 MinIO 台架的连接；计数对象直接读 `file://` 对象存储。
 
@@ -15,7 +15,7 @@ use common::api::{
     FLUSH_1H, SlowRequest, counter_window, ingest_ok, search, sent, sent_element, settle_minute,
 };
 use common::s3::S3Instance;
-use common::{BEARER, Fixture, HeldPort, Kv, Resp, Server, wait_file};
+use common::{BEARER, Fixture, HeldPort, Kv, Resp, Server, default_sighup, wait_file};
 use object_store::ObjectStoreExt;
 
 const PAUSE_BEFORE_LISTEN: &str = "开始监听之前";
@@ -228,6 +228,28 @@ fn shutdown_sigint_same_as_sigterm() {
     ingest_ok(&server, "si", r#"[{"a":1}]"#);
     stop(&mut server, "INT");
     assert_eq!(current_record_count(&fx, "si"), Some(1));
+}
+
+/// 不为 SIGHUP 安装处置（REQ-AMB-LIFE-DURABILITY-V5）：处置为缺省时进程因该信号终止，不做优雅停机；已确认记录不丢。
+#[test]
+fn shutdown_sighup_no_graceful() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let fx = Fixture::new();
+    let mut cmd = fx.serve(&[]);
+    default_sighup(&mut cmd);
+    let mut server = Server::start(cmd);
+    ingest_seq(&server, "app", 100, 10);
+    server.signal("HUP");
+    let status = server
+        .wait_status(Duration::from_secs(5))
+        .expect("5 秒内进程没有终止");
+    assert_eq!(status.code(), None, "{:#?}", server.stderr_lines());
+    assert_eq!(status.signal(), Some(libc::SIGHUP));
+
+    let server = fx.start(&[]);
+    assert_eq!(server.wait_readyz(200, Duration::from_secs(10)).status, 200);
+    assert_eq!(distinct_seqs(&server, "app"), (0..100).collect());
 }
 
 #[test]

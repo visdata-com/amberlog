@@ -4,7 +4,6 @@
 //! 同一份），不读对象存储、不找链尾，也不向 [`crate::limits::Admission`] 取执行名额。先过状态闸门，再判数据集是否存在。
 
 use amberlog_common::dataset::Dataset;
-use amberlog_common::error::Reason;
 use amberlog_common::schema::ColumnType;
 use amberlog_storage::gate::DatasetGates;
 use amberlog_storage::memtable::MemtableView;
@@ -20,12 +19,9 @@ pub fn fields(
     if let Some(reason) = gates.state(dataset).reason() {
         return Err(QueryError::new(reason, "dataset is disabled until restart"));
     }
-    let schema = memtable.schema(dataset).ok_or_else(|| {
-        QueryError::new(
-            Reason::StreamNotFound,
-            format!("stream `{}` does not exist", dataset.stream),
-        )
-    })?;
+    let schema = memtable
+        .schema(dataset)
+        .ok_or_else(|| QueryError::stream_not_found(&dataset.stream))?;
     let mut columns: Vec<(String, ColumnType)> = schema
         .columns()
         .iter()

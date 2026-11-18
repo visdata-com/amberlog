@@ -1,4 +1,4 @@
-//! REQ-AMB-ERR-ENVELOPE-V7 的系统测试。
+//! REQ-AMB-ERR-ENVELOPE-V8 的系统测试。
 //!
 //! 需要预置对象存储状态的场景由测试停机后直接改写 `file://` 临时目录下的对象，再以同一配置重启。对象存储不可访问的
 //! 三个场景接 MinIO 台架（[`S3Instance`]），停掉中继：`file://` 没有端点与桶名，测不出 5xx 的脱敏。
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use common::api::{
     FLUSH_1H, MINUTE_US, SlowRequest, ingest, ingest_ok, minute_of, now_us, search_body, sent,
 };
+use common::authz::{self, ServiceToken, get_as, ingest_as, search_as, token_entry};
 use common::s3::S3Instance;
 use common::store::{Ds, snapshot_rel};
 use common::{BEARER, Fixture, Kv, Resp, Server};
@@ -161,7 +162,9 @@ type Row<'a> = (
 #[test]
 fn error_envelope_invariants() {
     let f = Fixture::new();
-    let s = f.start(&[MAX_BODY_1K]);
+    let q = ServiceToken::generate();
+    let s = authz::start(&f, &[token_entry("q", &q, QUERIER_APP)], &[MAX_BODY_1K]);
+    let q_bearer = q.bearer();
     ingest_ok(&s, "app", r#"[{"a":1}]"#);
     // REQ-AMB-ERR-ENVELOPE-V4：`numeric_overflow` 一行（Int64 求和超出 Int64，REQ-AMB-QRY-AGGREGATION）
     ingest_ok(&s, "ov", r#"[{"n":9223372036854775807},{"n":1}]"#);
@@ -175,6 +178,15 @@ fn error_envelope_invariants() {
             b"{}",
             401,
             "unauthorized",
+        ),
+        // REQ-AMB-ERR-ENVELOPE-V8：403 只用于 `forbidden`（查询者写入）
+        (
+            "POST",
+            "/api/default/app/_json",
+            vec![("Authorization", q_bearer.as_str())],
+            br#"[{"a":1}]"#,
+            403,
+            "forbidden",
         ),
         (
             "GET",
@@ -638,4 +650,192 @@ fn error_5xx_masked_catalog() {
     );
     assert_catalog_body(&r, 503, "unavailable");
     assert_masked(r.json()["error"]["message"].as_str().unwrap(), &inst);
+}
+
+// ---------------------------------------------------------------------------
+// 403 与安全响应头、授权的路径一步在校验链中的位置（REQ-AMB-ERR-ENVELOPE-V8）：授权文件与服务令牌由测试现场生成
+// ---------------------------------------------------------------------------
+
+const QUERIER_APP: &str = r#"[{ role = "querier", streams = ["app"] }]"#;
+const WRITER_APP_PREFIX: &str = r#"[{ role = "writer", streams = ["app_*"] }]"#;
+
+const FORBIDDEN_CHALLENGE: &str = r#"Bearer error="insufficient_scope""#;
+
+#[test]
+fn error_forbidden_shape() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(&f, &[token_entry("w", &w, WRITER_APP_PREFIX)], &[]);
+    ingest_ok(&s, "app_a", r#"[{"a":1}]"#);
+    let bearer = w.bearer();
+    let r = s.request(
+        "POST",
+        "/api/default/_search",
+        &[
+            ("Authorization", bearer.as_str()),
+            ("x-request-id", "f-1"),
+            ("Content-Type", "application/json"),
+        ],
+        search_body("SELECT count(*) AS n FROM app_a").as_bytes(),
+    );
+    let v = r.assert_envelope(403, "forbidden");
+    assert!(v["code"].is_u64());
+    assert_eq!(r.header("x-request-id"), Some("f-1"));
+    assert_eq!(r.header("www-authenticate"), Some(FORBIDDEN_CHALLENGE));
+}
+
+#[test]
+fn error_nosniff_all_responses() {
+    let f = Fixture::new();
+    let s = f.start(&[]);
+    let rs = [
+        s.get("/healthz"),
+        s.get("/foo"),
+        s.request("POST", "/api/default/_search", &[], b"{}"),
+        s.get("/ui"),
+        s.get_auth("/metrics"),
+    ];
+    let statuses: Vec<u16> = rs.iter().map(|r| r.status).collect();
+    assert_eq!(statuses, [200, 404, 401, 200, 200]);
+    for r in &rs {
+        assert_eq!(r.header("x-content-type-options"), Some("nosniff"), "{r:?}");
+    }
+}
+
+#[test]
+fn error_no_store_by_path() {
+    let f = Fixture::new();
+    let a = f.start(&[]);
+    ingest_ok(&a, "app", r#"[{"a":1}]"#);
+    let g = Fixture::new();
+    let b = g.start(&[("auth.enabled", Some("false")), ("auth.token", None)]);
+    let rs = [
+        a.request("POST", "/api/default/_search", &[], b"{}"),
+        search_as(&a, BEARER, "SELECT count(*) AS n FROM app"),
+        a.get_auth("/metrics"),
+        a.get_auth("/iceberg/v1/config"),
+        b.get("/metrics"),
+    ];
+    let statuses: Vec<u16> = rs.iter().map(|r| r.status).collect();
+    assert_eq!(statuses, [401, 200, 200, 200, 200]);
+    for r in &rs {
+        assert_eq!(r.header("cache-control"), Some("no-store"), "{r:?}");
+    }
+}
+
+#[test]
+fn error_name_check_before_endpoint_permission() {
+    let f = Fixture::new();
+    let (q, w) = (ServiceToken::generate(), ServiceToken::generate());
+    let s = authz::start(
+        &f,
+        &[
+            token_entry("q", &q, QUERIER_APP),
+            token_entry("w", &w, WRITER_APP_PREFIX),
+        ],
+        &[],
+    );
+    ingest_as(&s, &q.bearer(), "_bad", &[], r#"[{"a":1}]"#)
+        .assert_envelope(400, "invalid_stream_name");
+    let bearer = q.bearer();
+    s.request(
+        "POST",
+        "/api/acme/app/_json",
+        &[
+            ("Authorization", bearer.as_str()),
+            ("Content-Type", "application/json"),
+        ],
+        br#"[{"a":1}]"#,
+    )
+    .assert_envelope(404, "org_not_found");
+    get_as(&s, &w.bearer(), "/api/default/_bad/_fields")
+        .assert_envelope(400, "invalid_stream_name");
+}
+
+#[test]
+fn error_write_forbidden_before_state_gate() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let entries = [token_entry("w", &w, WRITER_APP_PREFIX)];
+    let mut s = authz::start(&f, &entries, &[FLUSH_1H]);
+    ingest_ok(&s, "hr", r#"[{"a":1}]"#);
+    s.signal("TERM");
+    assert_eq!(s.wait_exit(Duration::from_secs(30)), Some(Some(0)));
+    drop(s);
+    set_current_format_version(&f.dataset("hr"), 3);
+    let s = authz::start(&f, &entries, &[]);
+    assert_eq!(s.wait_readyz(200, Duration::from_secs(10)).status, 200);
+    let bearer = w.bearer();
+    s.request(
+        "POST",
+        "/api/default/hr/_json",
+        &[
+            ("Authorization", bearer.as_str()),
+            ("Content-Encoding", "br"),
+        ],
+        b"{",
+    )
+    .assert_envelope(403, "forbidden");
+    ingest_as(&s, &bearer, "nx", &[], r#"[{"a":1}]"#).assert_envelope(403, "forbidden");
+    search_as(&s, BEARER, "SELECT count(*) AS n FROM nx").assert_envelope(400, "stream_not_found");
+}
+
+#[test]
+fn error_metrics_method_before_authz() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(&f, &[token_entry("w", &w, WRITER_APP_PREFIX)], &[]);
+    let bearer = w.bearer();
+    let post = s.request(
+        "POST",
+        "/metrics",
+        &[("Authorization", bearer.as_str())],
+        b"",
+    );
+    post.assert_envelope(405, "method_not_allowed");
+    assert_eq!(post.allow(), ["GET".to_owned()].into());
+    get_as(&s, &bearer, "/metrics").assert_envelope(403, "forbidden");
+}
+
+#[test]
+fn error_catalog_forbidden_body() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(&f, &[token_entry("w", &w, WRITER_APP_PREFIX)], &[]);
+    let r = get_as(&s, &w.bearer(), "/iceberg/v1/config");
+    assert_eq!(r.header("www-authenticate"), Some(FORBIDDEN_CHALLENGE));
+    assert_catalog_body(&r, 403, "forbidden");
+}
+
+#[test]
+fn error_5xx_error_log_request_id_field() {
+    let inst = S3Instance::new();
+    let s = store_down_after_commit(
+        &inst,
+        &[
+            ("log.level", Some("\"error\"")),
+            ("log.format", Some("\"json\"")),
+        ],
+    );
+    s.request(
+        "POST",
+        "/api/default/_search",
+        &[("Authorization", BEARER), ("x-request-id", "r-503f")],
+        search_body("SELECT * FROM app").as_bytes(),
+    )
+    .assert_envelope(503, "unavailable");
+    let found = || {
+        s.json_lines()
+            .iter()
+            .any(|l| l["level"] == "error" && l["request_id"] == "r-503f")
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !found() {
+        assert!(
+            Instant::now() < deadline,
+            "30 秒内没有 request_id 为 r-503f 的 error 日志：{:?}",
+            s.stderr_lines()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

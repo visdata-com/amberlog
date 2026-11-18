@@ -23,12 +23,21 @@ parquet = "59.3.0"
 object_store = { version = "0.13.2", features = ["aws"] }
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b154603a710d730d2f43f8af4db257cc137237ef" }
 axum = "0.8.9"
+# 只以 HTTP/1 受理、30 秒收不全请求头即关闭连接（REQ-AMB-CFG-STARTUP-V9）：自写接收循环，每个连接用 hyper 的 HTTP/1
+# 连接构建器，不走 axum::serve 的 HTTP/1 与 HTTP/2 协议探测。版本与 axum 所依赖的相同，不引入新包。
+hyper = { version = "1.11.1", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "service"] }
 # 入站 TLS（REQ-AMB-ARCH-ENCRYPTION，ADR-0047 第 9 条）：只用 ring 后端，关掉默认的 aws-lc-rs；PEM 用 rustls 自带的
 # pki-types 解析。与 reqwest、hyper-rustls 所依赖的版本相同，特性组合不变，不引入新包。
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 # webhook 的系统根证书（REQ-AMB-ARCH-ENCRYPTION-V2）：与 object_store（经 reqwest）所用的同一版本，已在依赖树中。
 rustls-native-certs = "0.8.4"
+# 身份平台令牌的签名验证（REQ-AMB-AUTH-OIDC-VERIFY-ALG、-VERIFY-KEY）：rustls 的 ring 后端，已在依赖树中，不引入新包。
+ring = "0.17.14"
+# 访问身份平台的出站 HTTPS（REQ-AMB-AUTH-OIDC A、C 组）：object_store 所用的同一版本与特性，已在依赖树中，不引入新包；
+# TLS 设置由调用方以 rustls（ring 后端）预先构造。
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots-no-provider"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # arbitrary_precision：数字保留十进制原文（Number 内部存字符串，不先转 f64）。_timestamp 按字面量精确值换算
 # （REQ-AMB-TIME-TIMESTAMP）要它。注意它会规范化原文（指数记作 `e+`、`-0` 记作 `0`），记录模型「数字照抄字面量」

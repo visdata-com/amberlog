@@ -1,4 +1,4 @@
-//! 冷层合并（REQ-AMB-STO-COLD-COMPACTION）：入湖之后，把冷层同一日分区的小文件合并成较大的文件，行集不变，被合并的
+//! 冷层合并（REQ-AMB-STO-COLD-COMPACTION-V2）：入湖之后，把冷层同一日分区的小文件合并成较大的文件，行集不变，被合并的
 //! 文件留痕。编排归桶生命周期，提交经冷层写入。
 //!
 //! 桶生命周期的一项周期工作（[`BucketTask`]），每轮（不长于 30 秒，也不长于 `cold_compaction.check_interval`）对每个存在
@@ -8,7 +8,8 @@
 //!    （-RECOVER、-RETRY）：被移除的文件取其父快照与它的存活文件之差，合并记录取它新增的文件，摘要取 `amberlog.file_digests`，
 //!    不读合并产出。补写没有全部成功时不为该数据集开始新的合并。
 //! 2. 到了检查时刻（开始受理后第一轮，此后每隔 `cold_compaction.check_interval`；-CHECK）时，对各够格的日分区判合并候选
-//!    文件与合并条件（-TERM-*），对满足的分区依次合并一次：读出全部合并输入并核对写入时摘要（不符各报一次 `digest_mismatch`，
+//!    文件与合并条件（-TERM-*），对满足的分区依次合并一次（合并候选文件之和不大于目标大小时全部合并，否则按
+//!    -TRIGGER-CAP 取一部分，[`select`]）：读出全部合并输入并核对写入时摘要（不符各报一次 `digest_mismatch`，
 //!    `tier` 为 `cold`，该分区本进程不再合并）→ [`ColdUpkeep::replace`]（重写只用核对过的字节，提交前按所基于的版本重核）→
 //!    冷层变更段提交（`deletions` 记各输入、`reason` 为 `compaction`，`additions` 记合并记录）。物理删除由 [`crate::purge`]
 //!    按冷层变更段与 `storage.delete_delay` 延后进行（-PHYS-DELETE）。
@@ -371,13 +372,13 @@ impl ColdCompaction {
         let Some(table) = self.cold_current(dataset, &snapshot).await? else {
             return Ok(());
         };
-        // 先只按冷层清单粗筛：没有哪个够格分区有两个小于目标大小的文件，就不必读热层
+        // 先只按冷层清单粗筛：没有哪个够格分区有两个小于目标大小一半的文件，就不必读热层
         let target = self.config.target_file_bytes;
         let mut by_day: BTreeMap<i32, Vec<&ColdDataFile>> = BTreeMap::new();
         for f in table
             .files
             .iter()
-            .filter(|f| f.size_bytes < target && self.eligible(f.day, now))
+            .filter(|f| below_half(f.size_bytes, target) && self.eligible(f.day, now))
         {
             by_day.entry(f.day).or_default().push(f);
         }
@@ -397,13 +398,20 @@ impl ColdCompaction {
             let candidates: Vec<(&ColdDataFile, &Recorded)> = files
                 .into_iter()
                 .filter_map(|f| Some((f, recorded.get(&f.path)?)))
-                .filter(|(f, r)| !r.merged || f.size_bytes < target / 2)
                 .filter(|(f, _)| !window.contains(&f.added_snapshot_id))
                 .filter(|(f, _)| cutoff.is_none_or(|c| f.max_timestamp >= c))
                 .collect();
             if candidates.len() < 2 || candidates.iter().all(|(_, r)| r.merged) {
                 continue;
             }
+            let sizes: Vec<(u64, bool)> = candidates
+                .iter()
+                .map(|(f, r)| (f.size_bytes, !r.merged))
+                .collect();
+            let candidates: Vec<(&ColdDataFile, &Recorded)> = select(&sizes, target)
+                .into_iter()
+                .map(|i| candidates[i])
+                .collect();
             if self.stopping() || !self.normal(dataset) {
                 return Err(Skip);
             }
@@ -716,5 +724,131 @@ fn merge_record(f: &ColdDataFile, digest: Digest) -> ColdFileEntry {
         record_count: f.record_count,
         size_bytes: f.size_bytes,
         content_digest: digest,
+    }
+}
+
+/// 字节数 `size` 是否小于目标大小 `target` 的一半（-TERM-CANDIDATE ②，入湖新增的文件与合并产出同一标准）。
+fn below_half(size: u64, target: u64) -> bool {
+    size.saturating_mul(2) < target
+}
+
+/// 从一个分区的合并候选文件（各自的字节数与是否入湖新增）中选出合并输入，返回下标（REQ-AMB-STO-COLD-COMPACTION-V2-TRIGGER、
+/// -TRIGGER-CAP）。之和不大于 `target` 时全取；否则按字节数升序取，已取之和不大于 `target` 就再取下一个（再加任何一个都会
+/// 使「去掉最大一个后之和不大于目标大小」不成立时停），所取不含入湖新增的文件时以其中最小的一个换下所取最大的一个。调用方
+/// 保证候选不少于 2 个、至少 1 个入湖新增、各小于 `target` 的一半，所以取到的至少 2 个。
+fn select(files: &[(u64, bool)], target: u64) -> Vec<usize> {
+    let total = files.iter().fold(0u64, |s, f| s.saturating_add(f.0));
+    if total <= target {
+        return (0..files.len()).collect();
+    }
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by_key(|&i| files[i].0);
+    let mut chosen = Vec::new();
+    let mut sum = 0u64;
+    for &i in &order {
+        if sum > target {
+            break;
+        }
+        chosen.push(i);
+        sum = sum.saturating_add(files[i].0);
+    }
+    if !chosen.iter().any(|&i| files[i].1)
+        && let Some(&lake) = order.iter().find(|&&i| files[i].1)
+    {
+        // 升序取到的都不是入湖新增的文件：最小的入湖新增文件不小于所取的任何一个，换下最大的一个后仍满足上限与「多取」
+        chosen.pop();
+        chosen.push(lake);
+    }
+    chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const T: u64 = 1000;
+
+    /// TRIGGER-CAP 的四项：至少 2 个、含入湖新增、去掉最大后不大于目标、再加任何一个都违反第三项。
+    fn check(files: &[(u64, bool)], chosen: &[usize]) {
+        let ok = |set: &[usize]| {
+            let sum: u64 = set.iter().map(|&i| files[i].0).sum();
+            let max = set.iter().map(|&i| files[i].0).max().unwrap_or(0);
+            sum - max <= T
+        };
+        assert!(chosen.len() >= 2, "{chosen:?}");
+        assert!(chosen.iter().any(|&i| files[i].1), "{chosen:?}");
+        assert!(ok(chosen), "{chosen:?}");
+        for i in (0..files.len()).filter(|i| !chosen.contains(i)) {
+            let mut more = chosen.to_vec();
+            more.push(i);
+            assert!(!ok(&more), "还能加入 {i}：{chosen:?}");
+        }
+    }
+
+    #[test]
+    fn select_all_when_total_within_target() {
+        let files = [(300, true), (200, false), (400, true)];
+        assert_eq!(select(&files, T), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn select_caps_ascending_prefix() {
+        // 6 个各在目标的四分之一到三分之一之间：恰取 4 个
+        let files = [
+            (300, true),
+            (260, true),
+            (330, true),
+            (280, true),
+            (310, true),
+            (270, true),
+        ];
+        let chosen = select(&files, T);
+        assert_eq!(chosen.len(), 4, "{chosen:?}");
+        check(&files, &chosen);
+    }
+
+    #[test]
+    fn select_swaps_in_lake_file() {
+        // 升序取到的都是合并产出：换入最小的入湖新增文件
+        let files = [
+            (100, false),
+            (200, false),
+            (300, false),
+            (400, false),
+            (450, true),
+            (420, true),
+        ];
+        let chosen = select(&files, T);
+        assert!(chosen.contains(&5), "{chosen:?}");
+        check(&files, &chosen);
+    }
+
+    #[test]
+    fn select_satisfies_cap_on_many_shapes() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..2000 {
+            let n = 2 + (x % 9) as usize;
+            let mut files = Vec::with_capacity(n);
+            for k in 0..n {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                files.push((1 + x % (T / 2 - 1), k == 0 || x.is_multiple_of(3)));
+            }
+            let chosen = select(&files, T);
+            if files.iter().map(|f| f.0).sum::<u64>() <= T {
+                assert_eq!(chosen.len(), n);
+            } else {
+                check(&files, &chosen);
+            }
+        }
+    }
+
+    #[test]
+    fn below_half_is_strict() {
+        assert!(below_half(499, T));
+        assert!(!below_half(500, T));
+        assert!(below_half(2, 5));
+        assert!(!below_half(3, 5));
     }
 }

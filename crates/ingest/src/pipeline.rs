@@ -174,6 +174,8 @@ pub enum SentRejected {
     Invalid(SentError),
     /// WAL 写入或 fsync 失败（503 `unavailable`），带 WAL 错误的原文（只进日志，不进响应）。
     Unavailable(String),
+    /// 请求体校验全部通过之后被调用方的放行判定否决（来源限定，403 `forbidden`）：不建数据集、不追加 WAL。
+    Refused,
 }
 
 /// 一次写入不以 HTTP 200 作答的结果。
@@ -311,15 +313,20 @@ impl Pipeline {
         .await
     }
 
-    /// 处理一次 `_sent` 上报（REQ-AMB-OBS-INGEST-COUNTERS）：校验请求体（任一元素不合规即整个请求被拒）→
-    /// 确保数据集存在（同 `_json`）→ 在该数据集的判定锁内把全部元素作为一个 WAL 条目追加 → fsync 成功后按 WAL 位置顺序计入治理计数。
-    /// 返回受理的元素（按数组顺序）。未接治理计数时不应被调用。
+    /// 处理一次 `_sent` 上报（REQ-AMB-OBS-INGEST-COUNTERS-V4）：校验请求体（任一元素不合规即整个请求被拒）→ 以 `admit`
+    /// 判定放行（来源限定，否决即 [`SentRejected::Refused`]）→ 确保数据集存在（同 `_json`）→ 在该数据集的判定锁内把全部
+    /// 元素作为一个 WAL 条目追加 → fsync 成功后按 WAL 位置顺序计入治理计数。返回受理的元素（按数组顺序）。未接治理计数时
+    /// 不应被调用。
     pub async fn report_sent(
         &self,
         dataset: &Dataset,
         body: &[u8],
+        admit: impl FnOnce(&[amberlog_storage::wal::SentElement]) -> bool,
     ) -> Result<Vec<amberlog_storage::wal::SentElement>, SentRejected> {
         let elements = parse_sent(body).map_err(SentRejected::Invalid)?;
+        if !admit(&elements) {
+            return Err(SentRejected::Refused);
+        }
         let inner = Arc::clone(&self.inner);
         let dataset = dataset.clone();
         detached(async move { inner.report_sent(&dataset, elements).await }).await

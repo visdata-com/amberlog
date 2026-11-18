@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use common::alerting::{
     Clock, EVAL_END_US, MINUTE_US, RECORD_WAIT, RuleToml, SECOND_US, evaluations, has_data,
-    has_one, metric_or_zero, rules, search, wait_evaluation, wait_tick,
+    has_one, metric_or_zero, rules, search, toml_str, wait_evaluation, wait_tick,
 };
+use common::authz::{ServiceToken, token_entry};
 use common::gov::rfc3339;
 use common::webhook::{Receiver, Request};
 use common::{Fixture, Kv, Server};
@@ -364,7 +365,8 @@ fn alr_eval_entry_skipped_nulls() {
 
     let obj = read_object(&f, "r1", t + MINUTE_US).unwrap();
     let e = element(&obj, t + MINUTE_US).unwrap();
-    assert_eq!(e.as_object().unwrap().len(), 12, "{e}");
+    assert_eq!(e.as_object().unwrap().len(), 13, "{e}");
+    assert_eq!(e["target"], "default/app", "{e}");
     for k in [
         "started_at",
         "matched_rows",
@@ -819,7 +821,7 @@ fn alr_eval_range_on_scheduled_at() {
 }
 
 #[test]
-fn alr_eval_thirteen_columns() {
+fn alr_eval_fourteen_columns() {
     let m = matched_setup(clock());
     let t = m.clock.next_tick(MINUTE_US);
     wait_tick(&m.s, m.clock, "r1", t);
@@ -845,6 +847,7 @@ fn alr_eval_thirteen_columns() {
         "delivery",
         "attempts",
         "last_http_status",
+        "target",
     ]
     .map(String::from)
     .into();
@@ -1116,4 +1119,316 @@ fn alr_eval_not_governance() {
             .any(|l| l.starts_with("amberlog_dataset_disabled{")),
         "{metrics}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// REQ-AMB-ALR-EVALUATIONS-V2：所查对象 `target`、读取忽略未定义的字段
+
+/// 一个十二个字段（不含 `target`）的合法元素：`scheduled_at` 为 `t`，跳过、未投递。
+fn entry_without_target(t: i64) -> Value {
+    json!({
+        "scheduled_at": t, "started_at": null, "finished_at": t + 2,
+        "window_start": t - 3 * MINUTE_US, "window_end": t,
+        "outcome": "skipped", "reason": "previous_running", "matched_rows": null, "truncated": null,
+        "delivery": "not_attempted", "attempts": 0, "last_http_status": null,
+    })
+}
+
+#[test]
+fn alr_eval_entry_target_values() {
+    let f = Fixture::new();
+    let rx = Receiver::http();
+    let clock = clock();
+    let hook = toml_str(&rx.url("/hook"));
+    let s = serve(
+        &f,
+        clock,
+        &[
+            hooked("d", &rx),
+            hooked("s", &rx).str("sql", "SELECT dataset FROM _ledger"),
+        ],
+        &[
+            ("alerts.max_concurrency", Some("3")),
+            ("alerts.missed_collection.enabled", Some("true")),
+            ("alerts.missed_collection.interval", Some("\"1m\"")),
+            ("alerts.missed_collection.webhook_url", Some(hook.as_str())),
+        ],
+        &[],
+    );
+    has_one(&s, clock);
+    let t = clock.next_tick(MINUTE_US);
+    for (rule, target) in [
+        ("d", "default/app"),
+        ("s", "_ledger"),
+        ("missed_collection", "*"),
+    ] {
+        wait_tick(&s, clock, rule, t);
+        let obj = read_object(&f, rule, t).unwrap();
+        let e = element(&obj, t).unwrap();
+        assert_eq!(e["target"], target, "{rule}: {e}");
+        assert_eq!(e.as_object().unwrap().len(), 13, "{rule}: {e}");
+    }
+}
+
+#[test]
+fn alr_eval_read_ignores_undefined_fields() {
+    let f = Fixture::new();
+    let s = f.start(&[]);
+    let now = common::api::now_us();
+    let (t1, t2) = (now - now.rem_euclid(HOUR_US), now);
+    let mut e2 = entry_without_target(t2);
+    e2["target"] = json!("default/app");
+    e2["extra"] = json!(1);
+    let obj = json!({
+        "format_version": 1, "org": "default", "rule": "old", "note": "n",
+        "evaluations": [entry_without_target(t1), e2],
+    });
+    put(
+        &f,
+        &object_rel("old", now),
+        &serde_json::to_vec(&obj).unwrap(),
+    );
+    let r = search(
+        &s,
+        "SELECT scheduled_at, target FROM _alert_evaluations WHERE rule = 'old'",
+        0,
+        EVAL_END_US,
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        r.json()["hits"],
+        json!([{"scheduled_at": t2, "target": "default/app"}, {"scheduled_at": t1}])
+    );
+    search(&s, "SELECT extra FROM _alert_evaluations", 0, EVAL_END_US)
+        .assert_envelope(400, "unknown_column");
+}
+
+#[test]
+fn alr_eval_resume_keeps_entries_without_target() {
+    let f = Fixture::new();
+    let rx = Receiver::http();
+    let clock = mid_hour(2);
+    // 启动之后第一个计划时刻 T 与早一分钟的 T0 同在一个 UTC 小时（mid_hour 使 T 不在整点）
+    let t = clock.next_tick(MINUTE_US);
+    let t0 = t - MINUTE_US;
+    let mut old = entry_without_target(t0);
+    old["extra"] = json!(true);
+    let pre = json!({
+        "format_version": 1, "org": "default", "rule": "r1", "note": "n",
+        "evaluations": [old],
+    });
+    put(&f, &object_rel("r1", t), &serde_json::to_vec(&pre).unwrap());
+    let s = serve(
+        &f,
+        clock,
+        &[hooked("r1", &rx).str("window", "3m")],
+        &[],
+        &[],
+    );
+    has_data(&s, clock, "app", &[r#"{"k":1}"#, r#"{"k":2}"#]);
+    assert_eq!(clock.next_tick(MINUTE_US), t, "准备用时超出了 LEAD");
+    wait_tick(&s, clock, "r1", t);
+    let obj = read_object(&f, "r1", t).unwrap();
+    let keys: BTreeSet<&str> = obj
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["format_version", "org", "rule", "evaluations"])
+    );
+    assert_eq!(scheduled(&obj), [t0, t]);
+    assert_eq!(element(&obj, t0).unwrap(), entry_without_target(t0));
+    let e = element(&obj, t).unwrap();
+    assert_eq!(e.as_object().unwrap().len(), 13, "{e}");
+    assert_eq!(e["target"], "default/app", "{e}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// REQ-AMB-ALR-EVALUATIONS-V2-ROW-VISIBLE：行按所查对象对主体过滤
+
+/// 以凭据 `bearer`、时间范围 `[start, end)` 查询 `sql`。
+fn search_as(s: &Server, bearer: &str, sql: &str, start: i64, end: i64) -> common::Resp {
+    let body = json!({"query": {"sql": sql, "start_time": start, "end_time": end}}).to_string();
+    s.request(
+        "POST",
+        "/api/default/_search",
+        &[("Authorization", bearer)],
+        body.as_bytes(),
+    )
+}
+
+/// 同 [`search_as`]，断言 200，返回 `hits`。
+fn hits_as(s: &Server, bearer: &str, sql: &str, start: i64, end: i64) -> Value {
+    let r = search_as(s, bearer, sql, start, end);
+    assert_eq!(r.status, 200, "{sql}：{}", r.text());
+    r.json()["hits"].clone()
+}
+
+/// 写授权文件，返回 `auth.authz_file` 的取值。
+fn authz_file(f: &Fixture, entries: &[String]) -> String {
+    common::authz::authz_file_value(&common::authz::write(f, entries))
+}
+
+/// 场景「行只对能看到所查对象的主体可见」的前提：令牌 Q（查询者，范围 [`app`]）与 G（治理查看者，范围 [`*`]）；
+/// `app`、`hr` 已有数据；规则 `a`、`h`、`s` 在计划时刻 T 的评估记录都已写出。返回 (实例, Q, G, T)。
+struct ThreeRules {
+    _f: Fixture,
+    _rx: Receiver,
+    s: Server,
+    q: ServiceToken,
+    g: ServiceToken,
+    t: i64,
+}
+
+fn three_rules() -> ThreeRules {
+    let f = Fixture::new();
+    let rx = Receiver::http();
+    let clock = clock();
+    let (q, g) = (ServiceToken::generate(), ServiceToken::generate());
+    let file = authz_file(
+        &f,
+        &[
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app"] }]"#),
+            token_entry(
+                "g",
+                &g,
+                r#"[{ role = "governance_viewer", streams = ["*"] }]"#,
+            ),
+        ],
+    );
+    let s = serve(
+        &f,
+        clock,
+        &[
+            hooked("a", &rx),
+            hooked("h", &rx).str("sql", "SELECT * FROM hr"),
+            hooked("s", &rx).str("sql", "SELECT dataset FROM _ledger"),
+        ],
+        &[
+            ("alerts.max_concurrency", Some("3")),
+            ("auth.authz_file", Some(file.as_str())),
+        ],
+        &[],
+    );
+    has_one(&s, clock);
+    has_data(&s, clock, "hr", &[r#"{"k":1}"#]);
+    let t = clock.next_tick(MINUTE_US);
+    for rule in ["a", "h", "s"] {
+        wait_tick(&s, clock, rule, t);
+    }
+    ThreeRules {
+        _f: f,
+        _rx: rx,
+        s,
+        q,
+        g,
+        t,
+    }
+}
+
+#[test]
+fn alr_eval_rows_visible_by_target() {
+    let x = three_rules();
+    let (t, end) = (x.t, x.t + 1);
+    let q = x.q.bearer();
+    assert_eq!(
+        hits_as(
+            &x.s,
+            &q,
+            "SELECT rule, target FROM _alert_evaluations",
+            t,
+            end
+        ),
+        json!([{"rule": "a", "target": "default/app"}])
+    );
+    let count = "SELECT count(*) AS n FROM _alert_evaluations";
+    assert_eq!(hits_as(&x.s, &q, count, t, end), json!([{"n": 1}]));
+    assert_eq!(
+        hits_as(&x.s, &x.g.bearer(), count, t, end),
+        json!([{"n": 3}])
+    );
+    let r = search(&x.s, count, t, end);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["hits"], json!([{"n": 3}]));
+}
+
+#[test]
+fn alr_eval_named_invisible_rule_empty() {
+    let x = three_rules();
+    let q = x.q.bearer();
+    for rule in ["h", "s"] {
+        let sql = format!("SELECT * FROM _alert_evaluations WHERE rule = '{rule}'");
+        assert_eq!(hits_as(&x.s, &q, &sql, 0, EVAL_END_US), json!([]), "{rule}");
+    }
+}
+
+#[test]
+fn alr_eval_old_entries_scope_all_only() {
+    let f = Fixture::new();
+    let (q, q2) = (ServiceToken::generate(), ServiceToken::generate());
+    let file = authz_file(
+        &f,
+        &[
+            token_entry("q", &q, r#"[{ role = "querier", streams = ["app"] }]"#),
+            token_entry("q2", &q2, r#"[{ role = "querier", streams = ["*"] }]"#),
+        ],
+    );
+    let s = f.start(&[("auth.authz_file", Some(file.as_str()))]);
+    let now = common::api::now_us();
+    put(&f, &object_rel("old", now), &valid_object("old", now));
+    let sql = "SELECT count(*) AS n FROM _alert_evaluations WHERE rule = 'old'";
+    assert_eq!(
+        hits_as(&s, &q.bearer(), sql, 0, EVAL_END_US),
+        json!([{"n": 0}])
+    );
+    assert_eq!(
+        hits_as(&s, &q2.bearer(), sql, 0, EVAL_END_US),
+        json!([{"n": 1}])
+    );
+}
+
+#[test]
+fn alr_eval_invisible_object_corrupt_500() {
+    let f = Fixture::new();
+    let rx = Receiver::http();
+    let clock = clock();
+    let q = ServiceToken::generate();
+    let file = authz_file(
+        &f,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["app"] }]"#,
+        )],
+    );
+    let s = serve(
+        &f,
+        clock,
+        &[hooked("a", &rx)],
+        &[("auth.authz_file", Some(file.as_str()))],
+        &[],
+    );
+    has_one(&s, clock);
+    let t = clock.next_tick(MINUTE_US);
+    wait_tick(&s, clock, "a", t);
+    put(&f, &object_rel("h", clock.now()), b"not json");
+    search_as(
+        &s,
+        &q.bearer(),
+        "SELECT * FROM _alert_evaluations",
+        0,
+        EVAL_END_US,
+    )
+    .assert_envelope(500, "internal");
+    let n = hits_as(
+        &s,
+        &q.bearer(),
+        "SELECT count(*) AS n FROM _alert_evaluations WHERE rule = 'a'",
+        0,
+        EVAL_END_US,
+    );
+    assert!(n[0]["n"].as_i64() > Some(0), "{n}");
 }

@@ -1,4 +1,4 @@
-//! 错误分类：`reason` 注册表与错误信封体（REQ-AMB-ERR-ENVELOPE-V7）。
+//! 错误分类：`reason` 注册表与错误信封体（REQ-AMB-ERR-ENVELOPE-V8）。
 //!
 //! `type_conflict` 自 REQ-AMB-DM-RECORD-MODEL-V3 起不再产生，按注册表「只增不改」留在枚举中。
 //!
@@ -23,6 +23,7 @@ pub enum Reason {
     SqlUnsupported,
     InvalidTimeRange,
     Unauthorized,
+    Forbidden,
     NotFound,
     MethodNotAllowed,
     PayloadTooLarge,
@@ -40,7 +41,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    pub const ALL: [Reason; 25] = [
+    pub const ALL: [Reason; 26] = [
         Reason::InvalidJson,
         Reason::InvalidEncoding,
         Reason::InvalidRequest,
@@ -52,6 +53,7 @@ impl Reason {
         Reason::SqlUnsupported,
         Reason::InvalidTimeRange,
         Reason::Unauthorized,
+        Reason::Forbidden,
         Reason::NotFound,
         Reason::MethodNotAllowed,
         Reason::PayloadTooLarge,
@@ -81,6 +83,7 @@ impl Reason {
             Reason::SqlUnsupported => "sql_unsupported",
             Reason::InvalidTimeRange => "invalid_time_range",
             Reason::Unauthorized => "unauthorized",
+            Reason::Forbidden => "forbidden",
             Reason::NotFound => "not_found",
             Reason::MethodNotAllowed => "method_not_allowed",
             Reason::PayloadTooLarge => "payload_too_large",
@@ -102,7 +105,8 @@ impl Reason {
     ///
     /// 各 `reason` 的状态码分散定义在各块（本块、REQ-AMB-DM-NAMESPACE、REQ-AMB-QRY-SEARCH-ENDPOINT-V2、
     /// REQ-AMB-STO-HOT-LAYOUT 等），每个 `reason` 恰对应一个状态码，且全部落在本块的闭集
-    /// {400, 401, 404, 405, 413, 415, 429, 500, 503} 内（REQ-AMB-ERR-ENVELOPE-V6 起含 429，只用于 `too_many_queries`）；
+    /// {400, 401, 403, 404, 405, 413, 415, 429, 500, 503} 内（REQ-AMB-ERR-ENVELOPE-V6 起含 429，只用于 `too_many_queries`；
+    /// REQ-AMB-ERR-ENVELOPE-V8 起含 403，只用于 `forbidden`）；
     /// 由 `code` 取自这里，信封的 `code` 与状态码不会错位。
     pub fn status(self) -> u16 {
         match self {
@@ -119,6 +123,7 @@ impl Reason {
             | Reason::NumericOverflow
             | Reason::QueryMemoryExceeded => 400,
             Reason::Unauthorized => 401,
+            Reason::Forbidden => 403,
             Reason::OrgNotFound
             | Reason::NotFound
             | Reason::NamespaceNotFound
@@ -204,9 +209,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// 块（现行版本 REQ-AMB-ERR-ENVELOPE-V7；块再被 supersede 时改指新文件）注册表条款所列的全部取值，按条款中的出现顺序
+    /// 块（现行版本 REQ-AMB-ERR-ENVELOPE-V8；块再被 supersede 时改指新文件）注册表条款所列的全部取值，按条款中的出现顺序
     /// （条款末尾括注里再次出现的 `type_conflict` 只记一次）。
-    const REGISTRY: [&str; 33] = [
+    const REGISTRY: [&str; 34] = [
         "invalid_json",
         "invalid_encoding",
         "invalid_request",
@@ -218,6 +223,7 @@ mod tests {
         "sql_unsupported",
         "invalid_time_range",
         "unauthorized",
+        "forbidden",
         "not_found",
         "method_not_allowed",
         "payload_too_large",
@@ -249,12 +255,12 @@ mod tests {
         if !root.join("knowledge").is_dir() {
             return None;
         }
-        let path = root.join("knowledge/requirements/req-amb-err-envelope-v7.md");
+        let path = root.join("knowledge/requirements/req-amb-err-envelope-v8.md");
         let block = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("读不到块文件 {}：{e}", path.display()));
         let clause = block
             .lines()
-            .find(|l| l.starts_with("[REQ-AMB-ERR-ENVELOPE-V7]") && l.contains("注册表："))
+            .find(|l| l.starts_with("[REQ-AMB-ERR-ENVELOPE-V8]") && l.contains("注册表："))
             .expect("块中找不到列举 reason 注册表的条款");
         let list = clause.split_once("注册表：").unwrap().1;
         Some(
@@ -303,6 +309,7 @@ mod tests {
             Reason::SqlUnsupported => const { reason_index(Reason::SqlUnsupported) },
             Reason::InvalidTimeRange => const { reason_index(Reason::InvalidTimeRange) },
             Reason::Unauthorized => const { reason_index(Reason::Unauthorized) },
+            Reason::Forbidden => const { reason_index(Reason::Forbidden) },
             Reason::NotFound => const { reason_index(Reason::NotFound) },
             Reason::MethodNotAllowed => const { reason_index(Reason::MethodNotAllowed) },
             Reason::PayloadTooLarge => const { reason_index(Reason::PayloadTooLarge) },
@@ -375,8 +382,8 @@ mod tests {
             .collect();
         assert_eq!(
             block.len(),
-            33,
-            "块注册表应为 25 个请求级值与 8 个逐条记录值"
+            34,
+            "块注册表应为 26 个请求级值与 8 个逐条记录值"
         );
         assert_eq!(code, block);
         // as_str 与 serde 序列化值一致
@@ -390,11 +397,13 @@ mod tests {
 
     #[test]
     fn reason_status_within_closed_set() {
-        const CLOSED: [u16; 9] = [400, 401, 404, 405, 413, 415, 429, 500, 503];
+        const CLOSED: [u16; 10] = [400, 401, 403, 404, 405, 413, 415, 429, 500, 503];
         for r in Reason::ALL {
             assert!(CLOSED.contains(&r.status()), "{r:?} 的状态码不在闭集内");
             // 429 只用于 `too_many_queries`（REQ-AMB-ERR-ENVELOPE-V6）
             assert_eq!(r.status() == 429, r == Reason::TooManyQueries, "{r:?}");
+            // 403 只用于 `forbidden`（REQ-AMB-ERR-ENVELOPE-V8）
+            assert_eq!(r.status() == 403, r == Reason::Forbidden, "{r:?}");
         }
         assert_eq!(Reason::QueryMemoryExceeded.status(), 400);
         assert_eq!(Reason::NamespaceNotFound.status(), 404);

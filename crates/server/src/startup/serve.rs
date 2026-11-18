@@ -61,6 +61,7 @@ use crate::alerting::webhook::Webhook;
 use crate::alerting::{Delivery, Recorder, Stop};
 use crate::api::search::governance::PersistedCounters;
 use crate::api::{self, Settings, Storage};
+use crate::authz::Authz;
 use crate::catalog::Catalog;
 use crate::config::Config;
 use crate::gateway::tls::Inbound;
@@ -73,14 +74,12 @@ use crate::verdicts;
 pub(super) async fn run(
     cfg: Config,
     inbound: Option<Inbound>,
+    authz: Arc<Authz>,
     lifecycle: Arc<Lifecycle>,
 ) -> Result<(), Failure> {
-    // 两项都由配置装载按 `Form::Serve` 的必填项保证
-    let (Some(wal_dir), Some(auth)) = (cfg.wal_dir.clone(), cfg.auth.clone()) else {
-        return Err(fail(
-            EXIT_UNCLASSIFIED,
-            "serve requires wal.dir and authentication settings",
-        ));
+    // 由配置装载按 `Form::Serve` 的必填项保证
+    let Some(wal_dir) = cfg.wal_dir.clone() else {
+        return Err(fail(EXIT_UNCLASSIFIED, "serve requires wal.dir"));
     };
     check_wal_dir(&wal_dir)?;
 
@@ -180,13 +179,19 @@ pub(super) async fn run(
     let state = AppState {
         health: Arc::clone(&health),
         metrics,
-        auth: Arc::new(auth),
+        authz,
     };
+    // 授权文件每 60 秒重读一次（REQ-AMB-AUTH-AUTHZ-RELOAD；认证关闭或未配授权文件时不起）
+    state.authz.spawn_reload();
     health.set_listening(local_addr, inbound.is_some());
     // 写入实例同一监听始终提供目录端点（REQ-AMB-STO-COLD-CATALOG-SERVE-PROVIDES）
     let catalog = Catalog::new(store.clone(), cfg.storage_prefix.clone());
     health.spawn_probe(store);
     health.evaluate();
+    // 取身份平台的说明文档与公钥集：后台进行，不等它（REQ-AMB-AUTH-OIDC-DISCOVERY-NOT-BLOCKING）
+    if let Some(idp) = state.authz.idp() {
+        idp.spawn();
+    }
 
     lifecycle.serving();
 

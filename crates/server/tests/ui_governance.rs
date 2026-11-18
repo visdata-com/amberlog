@@ -406,7 +406,7 @@ fn ui_gov_three_screens_real_data() {
     b.click("s-query");
     wait_settled(&mut b, "s");
     let t = b.table("s-result");
-    let a = t[0].iter().position(|h| h == "a").expect("有 a 列");
+    let a = col(&mut b, "s", "a");
     assert!(t.len() > 1, "{t:?}");
     assert!(t[1..].iter().all(|r| r[a] == "1"), "{t:?}");
 

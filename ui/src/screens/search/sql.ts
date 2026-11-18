@@ -1,4 +1,4 @@
-// 检索屏的条件与 SQL：胶囊切分（REQ-AMB-UI-SEARCH-V2-FIELD-COND、TEXT-COND）、
+// 检索屏的条件与 SQL：胶囊切分（REQ-AMB-UI-SEARCH-V4-FIELD-COND、TEXT-COND）、
 // 字面量（LITERAL）、条件写成 SQL（SQL-GEN、HIST-REQUEST、TOTAL、VALUES-REQUEST）与系统表时刻列（TIME-COLUMNS）。
 
 export type FieldOp = "=" | "!=" | "<" | "<=" | ">" | ">=" | "LIKE" | "IS NULL" | "IS NOT NULL";
@@ -29,13 +29,14 @@ export function parseCondition(input: string): Condition | null {
   return text === "" ? null : { kind: "text", text };
 }
 
-function fieldCondition(s: string): Condition | null {
+/**
+ * 按 FIELD-COND 的规则切分（不判断字段名、取值是否为空；DRAFT 据此认出「字段名 运算」后取值为空的输入）。
+ * 不按本条的（没有运算）为 null。
+ */
+export function splitField(s: string): { field: string; op: FieldOp; value: string } | null {
   const nul = NULL_SUFFIX.exec(s);
   if (nul !== null) {
-    const field = s.slice(0, nul.index).trim();
-    if (field === "") return null;
-    const op: FieldOp = nul[1]!.length > 7 ? "IS NOT NULL" : "IS NULL";
-    return { kind: "field", field, op, value: "" };
+    return { field: s.slice(0, nul.index).trim(), op: nul[1]!.length > 7 ? "IS NOT NULL" : "IS NULL", value: "" };
   }
   let best: { at: number; len: number; op: FieldOp } | null = null;
   for (const op of SYMBOL_OPS) {
@@ -50,10 +51,14 @@ function fieldCondition(s: string): Condition | null {
     if (best === null || at < best.at) best = { at, len: 4, op: "LIKE" };
   }
   if (best === null) return null;
-  const field = s.slice(0, best.at).trim();
-  const value = s.slice(best.at + best.len).trim();
-  if (field === "" || value === "") return null;
-  return { kind: "field", field, op: best.op, value };
+  return { field: s.slice(0, best.at).trim(), op: best.op, value: s.slice(best.at + best.len).trim() };
+}
+
+function fieldCondition(s: string): Condition | null {
+  const x = splitField(s);
+  if (x === null || x.field === "") return null;
+  if (x.value === "" && x.op !== "IS NULL" && x.op !== "IS NOT NULL") return null;
+  return { kind: "field", ...x };
 }
 
 export const quoteIdent = (s: string): string => "\"" + s.replaceAll("\"", "\"\"") + "\"";

@@ -240,6 +240,7 @@ pub async fn file_bytes(
 ///
 /// 只解码 `target` 所含的列（另加 `_timestamp`，以便没有别的列时仍按行数交出批次），只读 `_timestamp` 上下界与 `time`
 /// 相交的行组（[`scan::row_groups_in`]）；批次逐批解码，不攒成整份（REQ-AMB-QRY-RESOURCE-LIMITS-V2 METERED-SCOPE）。
+/// 没有要读的行组时为 `None`：不读任何行组数据（REQ-AMB-QRY-SEARCH-ENDPOINT-V10 所称不被扫描）。
 /// 文件尾部元数据无法解析、或某列的类型与 `target` 不符，在返回之前报出；之后的解码失败作为迭代中的一项报出。
 pub async fn read_file(
     store: &Store,
@@ -248,7 +249,7 @@ pub async fn read_file(
     path: &str,
     target: SchemaRef,
     time: Range<i64>,
-) -> Result<Batches<ColdError>, ColdError> {
+) -> Result<Option<Batches<ColdError>>, ColdError> {
     let bytes = file_bytes(store, layout, dataset, path).await?;
     let path = path.to_owned();
     let broken = |e: parquet::errors::ParquetError| ColdError::Broken(format!("{path}: {e}"));
@@ -276,17 +277,21 @@ pub async fn read_file(
     let roots: BTreeSet<usize> = found.iter().flatten().copied().chain(ts).collect();
     let mask = ProjectionMask::roots(builder.parquet_schema(), roots.iter().copied());
     let mut builder = builder.with_projection(mask).with_batch_size(BATCH_ROWS);
-    if let Some(ts) = ts {
-        let groups = scan::row_groups_in(builder.metadata(), ts, &time);
-        builder = builder.with_row_groups(groups);
+    let groups = match ts {
+        Some(ts) => scan::row_groups_in(builder.metadata(), ts, &time),
+        None => (0..builder.metadata().num_row_groups()).collect(),
+    };
+    if groups.is_empty() {
+        return Ok(None);
     }
+    builder = builder.with_row_groups(groups);
     let reader = builder.build().map_err(broken)?;
     // 解码出的批次按列号升序含 `roots` 各列
     let at: Vec<Option<usize>> = found
         .iter()
         .map(|f| f.map(|i| roots.iter().position(|r| *r == i).expect("列号在 roots 中")))
         .collect();
-    Ok(Box::new(reader.map(move |batch| {
+    Ok(Some(Box::new(reader.map(move |batch| {
         let batch = batch.map_err(|e| ColdError::Broken(format!("{path}: {e}")))?;
         let columns = target
             .fields()
@@ -299,7 +304,7 @@ pub async fn read_file(
             .collect::<Vec<ArrayRef>>();
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
         RecordBatch::try_new_with_options(Arc::clone(&target), columns, &options).map_err(invalid)
-    })))
+    }))))
 }
 
 /// 清单列表中该清单的分区摘要与 `days` 是否可能有交集（摘要缺上下界时按可能处置）。

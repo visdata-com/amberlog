@@ -1,4 +1,4 @@
-//! REQ-AMB-STO-EVIDENCE-VERIFY-V2 的系统测试：以子进程运行写入实例
+//! REQ-AMB-STO-EVIDENCE-VERIFY-V3 的系统测试：以子进程运行写入实例
 //! `amberlog serve`、`amberlog evidence export` 与 `amberlog evidence verify`，对象存储为 `file://` 临时目录，测试直接读、改、
 //! 删其中的对象构造篡改。场景里的 `/tmp/<名>` 一律落在每个测试自己的临时目录之下。
 
@@ -324,7 +324,9 @@ fn evidence_verify_format_version_higher() {
             v["evidence_format_version"] = json!(2)
         });
     });
+    let before = now_us();
     let rep = fx.verify_ok(&W, &p2, &[], 6);
+    let after = now_us();
     assert_eq!(rep["result"], "unprovable");
     assert!(
         kinds(&rep, "unprovable").contains(&"format_unsupported".to_owned()),
@@ -336,6 +338,8 @@ fn evidence_verify_format_version_higher() {
         rep["checked"],
         json!({"data_files": 0, "digests_recomputed": 0})
     );
+    let at = rep["verified_at"].as_i64().unwrap();
+    assert!(before <= at && at <= after, "{before} {rep} {after}");
 }
 
 #[test]
@@ -442,6 +446,42 @@ fn evidence_verify_package_inconsistent() {
     let rep = fx.verify_ok(&W, &p2, &[], 5);
     assert!(
         kinds(&rep, "problems").contains(&"package_inconsistent".to_owned()),
+        "{rep}"
+    );
+}
+
+#[test]
+fn evidence_verify_receipt_heads_unreadable() {
+    let fx = Fixture::new();
+    let mut w = fx.start(&W);
+    fx.hot_data(&w, 20);
+    let (_, r1) = export_pr(&fx, "p1", 0);
+    fx.hot_data(&w, 5);
+    stop(&mut w);
+    let (p2, _) = export_pr(&fx, "p2", 0);
+    let mut receipt: Value = serde_json::from_slice(&std::fs::read(&r1).unwrap()).unwrap();
+    receipt.as_object_mut().unwrap().remove("cold").unwrap();
+    let r1x = fx.tmp("r1x.receipt");
+    std::fs::write(&r1x, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let rep = fx.verify_ok(&W, &p2, &["--previous", s(&r1x)], 5);
+    assert!(
+        report_objects(&rep, "problems", "package_inconsistent")
+            .contains(&"--previous:receipt.json".to_owned()),
+        "{rep}"
+    );
+    let previous: Vec<&Value> = rep["anchors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["source"] == "previous")
+        .collect();
+    assert_eq!(previous.len(), 1, "{rep}");
+    assert_eq!(previous[0]["snapshot_id"], Value::Null, "{rep}");
+    let (_, files) = untar(&p2);
+    let lines = common::evidence::files_lines(&files);
+    assert_eq!(
+        rep["checked"]["digests_recomputed"],
+        lines.iter().filter(|l| l["state"] == "live").count() as u64,
         "{rep}"
     );
 }
@@ -623,7 +663,8 @@ fn evidence_verify_snapshot_anchor_recycled() {
     let rep = fx.verify_ok(&W, &p2, &["--previous", s(&r1)], 6);
     assert_eq!(rep["result"], "unprovable", "{rep}");
     assert!(
-        kinds(&rep, "unprovable").contains(&"snapshot_anchor_recycled".to_owned()),
+        report_objects(&rep, "unprovable", "snapshot_anchor_recycled")
+            .contains(&format!("default/app/{}", snapshot_rel(anchor))),
         "{rep}"
     );
     assert_eq!(rep["problems"], json!([]), "{rep}");
@@ -1684,6 +1725,29 @@ fn evidence_verify_inconsistent_beats_unprovable() {
             .iter()
             .any(|e| e["object"] == gp.as_str()),
         "{rep}"
+    );
+}
+
+#[test]
+fn evidence_verify_report_write_fail() {
+    let fx = Fixture::new();
+    hot_stopped(&fx);
+    let (p, _) = export_pr(&fx, "p", 0);
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = fx
+        .evidence_cmd(&W, "verify", &["--evidence", s(&p)])
+        .stdin(std::process::Stdio::null())
+        .stdout(full)
+        .output()
+        .expect("运行 amberlog evidence verify");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

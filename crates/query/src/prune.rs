@@ -456,7 +456,7 @@ mod tests {
         }})
         .to_string();
         let r = engine
-            .search("default", body.as_bytes())
+            .search("default", body.as_bytes(), &crate::viewer::System)
             .await
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(r.hits.len(), 1);

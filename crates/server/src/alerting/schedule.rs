@@ -282,6 +282,7 @@ impl Shared {
             delivery: delivery.result,
             attempts: delivery.attempts,
             last_http_status: delivery.last_status,
+            target: rule.target(),
         });
         self.counters.evaluation(&rule.name, draft.outcome);
         self.counters.delivery(&rule.name, delivery.result);

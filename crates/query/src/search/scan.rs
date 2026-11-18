@@ -2,13 +2,16 @@
 //! 再开下一个，逐批交出（REQ-AMB-QRY-RESOURCE-LIMITS-V2 METERED-SCOPE：同一时刻只留着一个文件的原始字节与各并行分区
 //! 手上的一批，[`crate::input`]）。只解码本查询用到的列；文件中 `_timestamp` 上下界与查询范围不相交的行组不读。
 //!
+//! 扫描统计在打开文件时计入（[`Scanned`]）：文件中有要读的行组才算被扫描（REQ-AMB-QRY-SEARCH-ENDPOINT-V10，冷层同此，
+//! REQ-AMB-QRY-CROSS-TIER-V2）；行组全被跳过的文件不计入。
+//!
 //! 读取失败的分类与读完全部文件之后再执行时相同（REQ-AMB-QRY-SEARCH-ENDPOINT「读取存储」、REQ-AMB-QRY-CROSS-TIER）：
 //! 作答所需的数据文件不存在时先重判是否「数据已移动」（[`Engine::missing`]），热层内容无法解析回 500，冷层按
 //! [`cold::error`]。
 
 use std::collections::VecDeque;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use amberlog_common::dataset::Dataset;
 use amberlog_common::error::Reason;
@@ -33,6 +36,32 @@ pub(super) enum Part {
     Cold(ColdDataFile),
 }
 
+/// 被扫描的数据文件的个数、字节数合计与记录数合计（热层取 `files` 条目的 `size_bytes` 与 `record_count`，冷层取清单
+/// 条目的 `file_size_in_bytes` 与 `record_count`）。由 [`Scan`] 在打开文件时累加，作答之后由调用方取出。
+#[derive(Debug, Default)]
+pub(super) struct Scanned(Mutex<ScanCounts>);
+
+/// [`Scanned`] 的取值。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScanCounts {
+    pub files: u64,
+    pub bytes: u64,
+    pub records: u64,
+}
+
+impl Scanned {
+    fn add(&self, bytes: u64, records: u64) {
+        let mut c = self.0.lock().expect("扫描统计锁未中毒");
+        c.files += 1;
+        c.bytes += bytes;
+        c.records += records;
+    }
+
+    pub(super) fn counts(&self) -> ScanCounts {
+        *self.0.lock().expect("扫描统计锁未中毒")
+    }
+}
+
 /// 正在读的文件。
 enum Open {
     Hot(FileBatches),
@@ -53,6 +82,7 @@ pub(super) struct Scan {
     /// 查询范围 `[start_time, end_time)`。
     time: Range<i64>,
     open: Option<Open>,
+    scanned: Arc<Scanned>,
 }
 
 impl Scan {
@@ -65,6 +95,7 @@ impl Scan {
         parts: VecDeque<Part>,
         cold_table: Option<Arc<ColdTable>>,
         time: Range<i64>,
+        scanned: Arc<Scanned>,
     ) -> Scan {
         Scan {
             engine,
@@ -75,10 +106,12 @@ impl Scan {
             cold_table,
             time,
             open: None,
+            scanned,
         }
     }
 
-    /// 打开下一个文件；文件都读过了为 `None`。
+    /// 打开下一个文件，它有要读的行组时计入 `scanned`；没有时不计入，也不打开（`open` 仍为 `None`）。文件都读过了为
+    /// `None`。
     async fn open_next(&mut self, schema: &SchemaRef) -> Option<Result<(), QueryError>> {
         let part = self.parts.pop_front()?;
         let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
@@ -90,7 +123,11 @@ impl Scan {
                     .read(&self.dataset, &file, &columns, self.time.clone())
                     .await;
                 match read {
-                    Ok(batches) => Ok(Open::Hot(batches)),
+                    Ok(Some(batches)) => {
+                        self.scanned.add(file.size_bytes, file.record_count);
+                        Ok(Some(Open::Hot(batches)))
+                    }
+                    Ok(None) => Ok(None),
                     Err(FileError::NotFound(m)) => {
                         let missing = Missing::Hot {
                             bucket: &bucket,
@@ -117,7 +154,11 @@ impl Scan {
                 )
                 .await;
                 match read {
-                    Ok(batches) => Ok(Open::Cold(batches)),
+                    Ok(Some(batches)) => {
+                        self.scanned.add(file.size_bytes, file.record_count);
+                        Ok(Some(Open::Cold(batches)))
+                    }
+                    Ok(None) => Ok(None),
                     Err(ColdReadError::NotFound(m)) => {
                         let missing = Missing::Cold {
                             path: &file.path,
@@ -129,7 +170,7 @@ impl Scan {
                 }
             }
         };
-        Some(opened.map(|o| self.open = Some(o)))
+        Some(opened.map(|o| self.open = o))
     }
 }
 
@@ -168,6 +209,7 @@ impl Source for Scan {
                     Some(Open::Cold(batches)) => batches
                         .next()
                         .map(|r| r.map_err(|e| cold::error(&self.engine.gates, &self.dataset, e))),
+                    // 打开下一个文件；它没有要读的行组时 `open` 仍为 `None`，接着打开再下一个
                     None => {
                         if let Err(e) = self.open_next(schema).await? {
                             return Some(Err(e));

@@ -239,12 +239,20 @@ impl Verify<'_> {
         } else {
             request.evidence.evidence["exported_at"].as_i64()
         };
-        for (param, kind, receipt, version) in &anchors {
+        // PKG-CONSISTENT ②：读不出链头的锚点在 `anchors` 中 `snapshot_id` 为 null，不参与 C 组
+        let anchor_heads: Vec<(&'static str, Option<Heads>)> = anchors
+            .iter()
+            .map(|(p, _, r, _)| (*p, package::heads_of(r)))
+            .collect();
+        for ((param, kind, receipt, version), (_, heads)) in anchors.iter().zip(&anchor_heads) {
             let newer = *version > EVIDENCE_FORMAT_VERSION;
             self.report.anchors.push(json!({
                 "source": if *param == "--evidence" { "evidence" } else { "previous" },
                 "kind": kind,
-                "snapshot_id": if newer { Value::Null } else { receipt["snapshot"]["snapshot_id"].clone() },
+                "snapshot_id": match heads {
+                    Some(h) if !newer => json!(h.snapshot.snapshot_id),
+                    _ => Value::Null,
+                },
                 "exported_at": if newer { Value::Null } else { receipt["exported_at"].clone() },
             }));
         }
@@ -307,10 +315,6 @@ impl Verify<'_> {
         }
 
         // C 组：链的延长
-        let anchor_heads: Vec<(&'static str, Option<Heads>)> = anchors
-            .iter()
-            .map(|(p, _, r, _)| (*p, package::heads_of(r)))
-            .collect();
         for (param, heads) in &anchor_heads {
             match heads {
                 Some(h) => {

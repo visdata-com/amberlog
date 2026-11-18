@@ -1049,10 +1049,11 @@ impl ColdReader for FakeColdReader {
         file: &'a ColdDataFile,
         _target: SchemaRef,
         _time: std::ops::Range<i64>,
-    ) -> BoxFuture<'a, Result<ColdBatches, ColdReadError>> {
+    ) -> BoxFuture<'a, Result<Option<ColdBatches>, ColdReadError>> {
+        // 替身不按时间选行组：预设的文件总有要读的行组
         let read = self.read(dataset, "data file", |d| d.files.get(&file.path).cloned());
         Box::pin(ready(read.map(|batches| {
-            Box::new(batches.into_iter().map(Ok)) as ColdBatches
+            Some(Box::new(batches.into_iter().map(Ok)) as ColdBatches)
         })))
     }
 }

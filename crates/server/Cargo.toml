@@ -17,6 +17,8 @@ amberlog-ingest.workspace = true
 amberlog-storage.workspace = true
 amberlog-query.workspace = true
 axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,6 +31,11 @@ tokio-rustls.workspace = true
 rustls-native-certs.workspace = true
 # 令牌比较先取摘要；系统测试另用它为 MinIO 台架的 STS 请求自签 SigV4（只读目录模式的只读凭据，REQ-AMB-STO-COLD-CATALOG）。
 sha2.workspace = true
+# 授权文件中令牌条目的到期时刻（RFC 3339，REQ-AMB-AUTH-AUTHZ-FILE-TOKENS）：工作区已有的版本，amberlog-query 已依赖。
+jiff.workspace = true
+# 身份平台：令牌签名验证与出站 HTTPS（REQ-AMB-AUTH-OIDC）。两者都已在依赖树中。
+ring.workspace = true
+reqwest.workspace = true
 
 [features]
 # 测试专用的故障注入点：本 crate 的「开始监听之前」暂停点，并转开 amberlog-storage 的注入点。

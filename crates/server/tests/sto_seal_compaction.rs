@@ -710,3 +710,104 @@ fn compaction_abandon_when_window_unknown() {
     let r = common::api::ingest(&s, "app", &format!(r#"[{{"_timestamp":{}}}]"#, now_us()));
     assert_eq!(r.status, 200, "{}", r.text());
 }
+
+/// 以 `[from, to)` 为时间范围执行 `sql`（`size` 为 10000），断言 200，返回排好序的 `hits`。
+fn query_range(s: &Server, sql: &str, from: i64, to: i64) -> Vec<String> {
+    let body = json!({"query": {"sql": sql, "start_time": from, "end_time": to, "size": 10000}})
+        .to_string();
+    let r = s.request(
+        "POST",
+        "/api/default/_search",
+        &[("Authorization", BEARER)],
+        body.as_bytes(),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    sorted_rows(r.json()["hits"].as_array().unwrap().clone())
+}
+
+/// 合并输出的行组按时间分开（不绑合约；行组怎么切不是对外表面）：已封口桶的几个小文件各有一段准时的记录和几条散在
+/// 整小时的迟到记录，合并后输出文件的各行组 `_timestamp` 上下界互不重叠、每个行组落在桶内一个整 5 分钟的时间段里；
+/// 5 分钟范围与整小时的查询结果与合并前相同。
+#[test]
+fn compaction_output_row_groups_split_by_time() {
+    const MIN: i64 = 60_000_000;
+    let f = Fixture::new();
+    let ds = f.dataset("app");
+    let start = two_hours_ago();
+    let label = bucket_label(start);
+    // 4 个文件，每个 50 条：45 条在 start + 40 分 + 4 分 × i 起的 45 秒内，5 条迟到的落在 start + 7 分 × k + i 秒
+    let mut s = f.start(&[GRACE_24H, ("flush.max_records", Some("50")), FLUSH_1S]);
+    for i in 0..4i64 {
+        let records: Vec<String> = (0..50i64)
+            .map(|j| {
+                let ts = if j < 45 {
+                    start + 40 * MIN + 4 * MIN * i + j * 1_000_000
+                } else {
+                    start + 7 * MIN * (j - 45) + i * 1_000_000
+                };
+                format!(r#"{{"_timestamp":{ts},"i":{i},"j":{j}}}"#)
+            })
+            .collect();
+        ingest_ok(&s, "app", &format!("[{}]", records.join(",")));
+        ds.wait_records((i as u64 + 1) * 50, Duration::from_secs(15));
+    }
+    let ranges = [
+        (start, start + HOUR),
+        (start + 40 * MIN, start + 45 * MIN),
+        (start + 50 * MIN, start + 55 * MIN),
+        (start + 5 * MIN, start + 10 * MIN),
+    ];
+    let before: Vec<Vec<String>> = ranges
+        .iter()
+        .map(|&(a, b)| query_range(&s, "SELECT * FROM app", a, b))
+        .collect();
+    assert_eq!(before[0].len(), 200);
+    assert_eq!(file_sizes(&head_manifest(&ds, &label)).len(), 4);
+    stop(&mut s);
+
+    let s = f.start(&[GRACE_1S, FLUSH_1S]);
+    let (m, ok) = poll(
+        Duration::from_secs(120),
+        || head_manifest(&ds, &label),
+        |m| m["files"].as_array().unwrap().len() == 1,
+    );
+    assert!(ok, "120 秒后仍未合并：{m}");
+    let output = m["files"][0]["path"].as_str().unwrap();
+    let bytes = ds.read(output);
+    let n = bytes.len();
+    let len = u32::from_le_bytes(bytes[n - 8..n - 4].try_into().unwrap()) as usize;
+    let meta =
+        parquet::file::metadata::ParquetMetaDataReader::decode_metadata(&bytes[n - 8 - len..n - 8])
+            .unwrap();
+    let descr = meta.file_metadata().schema_descr();
+    let ts = (0..descr.num_columns())
+        .find(|&i| descr.column(i).name() == "_timestamp")
+        .unwrap();
+    let groups: Vec<(i64, i64, i64)> = meta
+        .row_groups()
+        .iter()
+        .map(|rg| match rg.column(ts).statistics() {
+            Some(parquet::file::statistics::Statistics::Int64(st)) => (
+                rg.num_rows(),
+                *st.min_opt().unwrap(),
+                *st.max_opt().unwrap(),
+            ),
+            other => panic!("_timestamp 没有行组统计：{other:?}"),
+        })
+        .collect();
+    assert_eq!(groups.iter().map(|g| g.0).sum::<i64>(), 200, "{groups:?}");
+    assert!(groups.len() > 4, "{groups:?}");
+    for (_, lo, hi) in &groups {
+        assert_eq!(
+            (lo - start) / (5 * MIN),
+            (hi - start) / (5 * MIN),
+            "{groups:?}"
+        );
+    }
+    for w in groups.windows(2) {
+        assert!(w[0].2 < w[1].1, "行组互不重叠：{groups:?}");
+    }
+    for (&(a, b), want) in ranges.iter().zip(&before) {
+        assert_eq!(&query_range(&s, "SELECT * FROM app", a, b), want);
+    }
+}

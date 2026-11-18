@@ -190,7 +190,7 @@ async fn live_files(
 
 /// 按字段编号逐批读冷层数据文件 `file`：每批的列为 `target`（stream 当前 schema 中本查询用到的列，文件里没有的为 NULL），
 /// 由调用方再对齐到表 schema（REQ-AMB-QRY-CROSS-TIER-FIELD-ID、-MISSING-COLUMN）；`time` 为查询范围，范围之外的行组可以
-/// 不读。
+/// 不读。没有要读的行组时为 `None`（该文件不算被扫描，REQ-AMB-QRY-SEARCH-ENDPOINT-V10）。
 pub(crate) async fn read(
     reader: &dyn ColdReader,
     dataset: &Dataset,
@@ -198,7 +198,7 @@ pub(crate) async fn read(
     file: &ColdDataFile,
     target: SchemaRef,
     time: Range<i64>,
-) -> Result<ColdBatches, ColdReadError> {
+) -> Result<Option<ColdBatches>, ColdReadError> {
     reader.read_file(dataset, table, file, target, time).await
 }
 

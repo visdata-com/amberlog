@@ -1,4 +1,4 @@
-//! REQ-AMB-OBS-HEALTH-METRICS 的系统测试。
+//! REQ-AMB-OBS-HEALTH-METRICS-V7 的系统测试。
 //!
 //! 「对象存储不可达」用 `file://` 临时目录上的目录权限制造：把 `<prefix>/_system/` 改为 555，
 //! 就绪探测对 `readyz-probe` 的写入即失败；场景「readyz 为 503 时不拒绝 api 请求」照替身字段用 MinIO 台架加进程内
@@ -14,6 +14,7 @@ use common::api::{
     FLUSH_1H, SlowRequest, WalFault, ingest, ingest_ok, ingest_with, minute_of, now_us, sent,
     sent_element,
 };
+use common::authz::{self, ServiceToken, get_as, token_entry};
 use common::s3::S3Instance;
 use common::store::snapshot_rel;
 use common::{Fixture, Server, amberlog, set_mode};
@@ -260,6 +261,11 @@ fn metrics_format_types_labels() {
         ("amberlog_alert_evaluations_total", "counter"),
         ("amberlog_alert_deliveries_total", "counter"),
         ("amberlog_reconciliation_windows", "gauge"),
+        // REQ-AMB-OBS-HEALTH-METRICS-V7 的稳定集合
+        ("amberlog_auth_denied_total", "counter"),
+        ("amberlog_authz_reload_failures_total", "counter"),
+        // 不以是否配置身份平台为条件，自开始响应起输出
+        ("amberlog_oidc_fetch_failures_total", "counter"),
     ];
     let known = |name: &str| stable.iter().any(|(n, _)| *n == name) || NON_STABLE.contains(&name);
     // 指标族从样本行的指标名收集：只输出样本、不输出 `# TYPE` 行的指标族同样要属于稳定集合
@@ -318,6 +324,9 @@ fn metrics_format_types_labels() {
             "amberlog_reconciliation_windows",
             vec!["org", "stream", "verdict"],
         ),
+        ("amberlog_auth_denied_total", vec!["status"]),
+        ("amberlog_authz_reload_failures_total", vec![]),
+        ("amberlog_oidc_fetch_failures_total", vec![]),
     ] {
         let want: BTreeSet<&str> = labels.into_iter().collect();
         let samples: Vec<&str> = text
@@ -812,4 +821,149 @@ fn metrics_catalog_mode_minimal() {
         "{text}"
     );
     assert!(text.lines().any(|l| l == "amberlog_ready 1"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// 读 /metrics 的授权与认证、授权计数（REQ-AMB-OBS-HEALTH-METRICS-V7）：授权文件与服务令牌由测试现场生成，令牌 X 所在
+// 条目的 `name` 取它的小写
+// ---------------------------------------------------------------------------
+
+const WRITER_ALL: &str = r#"[{ role = "writer", streams = ["*"] }]"#;
+
+/// 认证与授权计数三行：`amberlog_auth_denied_total` 的 401、403 与 `amberlog_authz_reload_failures_total`。
+fn auth_counts(text: &str) -> (Option<f64>, Option<f64>, Option<f64>) {
+    (
+        sample(text, "amberlog_auth_denied_total{status=\"401\"}"),
+        sample(text, "amberlog_auth_denied_total{status=\"403\"}"),
+        sample(text, "amberlog_authz_reload_failures_total"),
+    )
+}
+
+#[test]
+fn health_metrics_requires_metrics_reader() {
+    let f = Fixture::new();
+    let (w, m) = (ServiceToken::generate(), ServiceToken::generate());
+    let s = authz::start(
+        &f,
+        &[
+            token_entry("w", &w, WRITER_ALL),
+            token_entry("m", &m, r#"[{ role = "metrics_reader" }]"#),
+        ],
+        &[],
+    );
+    let r = get_as(&s, &w.bearer(), "/metrics");
+    r.assert_envelope(403, "forbidden");
+    assert_eq!(
+        r.header("www-authenticate"),
+        Some("Bearer error=\"insufficient_scope\""),
+        "{r:?}"
+    );
+    for bearer in [m.bearer(), common::BEARER.to_owned()] {
+        let r = get_as(&s, &bearer, "/metrics");
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert!(
+            r.text()
+                .lines()
+                .any(|l| l.starts_with("amberlog_build_info")),
+            "{}",
+            r.text()
+        );
+    }
+}
+
+#[test]
+fn health_metrics_reader_sees_all_series() {
+    let f = Fixture::new();
+    let m = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "m",
+            &m,
+            r#"[{ role = "metrics_reader" }, { role = "querier", streams = ["app_*"] }]"#,
+        )],
+        &[],
+    );
+    ingest_ok(&s, "app_a", r#"[{"a":1}]"#);
+    ingest_ok(&s, "hr", r#"[{"a":1}]"#);
+    let r = get_as(&s, &m.bearer(), "/metrics");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let text = r.text();
+    for stream in ["app_a", "hr"] {
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("amberlog_ingest_records_total")
+                    && l.contains(&format!("stream=\"{stream}\""))),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn health_catalog_mode_auth_counters() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let path = authz::write(&f, &[token_entry("w", &w, WRITER_ALL)]);
+    let value = authz::authz_file_value(&path);
+    let c = Server::start(f.catalog(&[("auth.authz_file", Some(&value))]));
+    assert_eq!(c.wait_readyz(200, Duration::from_secs(60)).status, 200);
+    get_as(&c, &w.bearer(), "/metrics").assert_envelope(403, "forbidden");
+    let r = c.get_auth("/metrics");
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        auth_counts(&r.text()),
+        (Some(0.0), Some(1.0), Some(0.0)),
+        "{}",
+        r.text()
+    );
+}
+
+#[test]
+fn health_auth_denied_zero_at_start_and_counts() {
+    let f = Fixture::new();
+    let w = ServiceToken::generate();
+    let s = authz::start(&f, &[token_entry("w", &w, WRITER_ALL)], &[]);
+    assert_eq!(s.wait_readyz(200, Duration::from_secs(60)).status, 200);
+    let first = metrics(&s);
+    assert_eq!(
+        auth_counts(&first),
+        (Some(0.0), Some(0.0), Some(0.0)),
+        "{first}"
+    );
+    let statuses = [
+        s.request("POST", "/api/default/_search", &[], b"{}").status,
+        get_as(&s, "Bearer wrong", "/metrics").status,
+        get_as(&s, &w.bearer(), "/metrics").status,
+    ];
+    assert_eq!(statuses, [401, 401, 403]);
+    let last = metrics(&s);
+    let (a, b, _) = auth_counts(&last);
+    assert_eq!((a, b), (Some(2.0), Some(1.0)), "{last}");
+}
+
+#[test]
+fn health_authz_reload_failures_per_cycle() {
+    let f = Fixture::new();
+    let q = ServiceToken::generate();
+    let s = authz::start(
+        &f,
+        &[token_entry(
+            "q",
+            &q,
+            r#"[{ role = "querier", streams = ["*"] }]"#,
+        )],
+        &[],
+    );
+    let f0 = auth_counts(&metrics(&s))
+        .2
+        .expect("有 amberlog_authz_reload_failures_total");
+    authz::write_text(&f, "format_version = 2\n");
+    std::thread::sleep(Duration::from_secs(130));
+    let text = metrics(&s);
+    let f1 = auth_counts(&text)
+        .2
+        .expect("有 amberlog_authz_reload_failures_total");
+    assert!(f1 - f0 >= 2.0, "F0 {f0}，F1 {f1}");
+    assert!(text.lines().any(|l| l == "amberlog_ready 1"), "{text}");
+    assert_eq!(s.get("/readyz").status, 200);
 }

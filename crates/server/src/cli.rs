@@ -1,6 +1,7 @@
 //! 命令行（REQ-AMB-CFG-STARTUP-V7「可执行文件与命令行」）：`serve [--config <path>]`、`catalog [--config <path>]`
 //! （只读目录模式，REQ-AMB-STO-COLD-CATALOG）、`retire [--config <path>]`（优雅退役，REQ-AMB-LIFE-RETIREMENT）、`--version`，
-//! 以及离线子命令 `evidence export` 与 `evidence verify`（REQ-AMB-STO-EVIDENCE-EXPORT-ARGS、REQ-AMB-STO-EVIDENCE-VERIFY-ARGS）。
+//! 离线子命令 `evidence export` 与 `evidence verify`（REQ-AMB-STO-EVIDENCE-EXPORT-ARGS、REQ-AMB-STO-EVIDENCE-VERIFY-ARGS），以及工具
+//! 子命令 `token new`（不接受任何参数，REQ-AMB-CFG-STARTUP-V10）。
 //!
 //! 这里只判参数的写法（未知参数、缺必填、同一参数出现多次）；参数取值的校验属启动流程的「配置」一步，在各子命令的模块里。
 
@@ -12,6 +13,7 @@ amberlog catalog [--config <path>]\n       \
 amberlog retire [--config <path>]\n       \
 amberlog evidence export [--config <path>] --dataset <org>/<stream> [--from <time>] [--to <time>] --output <path>\n       \
 amberlog evidence verify [--config <path>] --evidence <path> [--previous <path>] [--retention <duration>]\n       \
+amberlog token new\n       \
 amberlog --version";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29,6 +31,8 @@ pub enum Command {
     },
     EvidenceExport(ExportArgs),
     EvidenceVerify(VerifyArgs),
+    /// 生成一个服务令牌与它的哈希行（REQ-AMB-CFG-STARTUP-V10）。
+    TokenNew,
 }
 
 /// `amberlog evidence export` 的参数（取值未校验）。
@@ -73,6 +77,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
             Some("verify") => parse_verify(args),
             Some(other) => Err(UsageError(format!("unknown evidence command {other:?}"))),
             None => Err(UsageError("evidence requires export or verify".into())),
+        },
+        Some("token") => match args.next().as_ref().map(|a| a.to_string_lossy()) {
+            Some(sub) if sub == "new" => match args.next() {
+                None => Ok(Command::TokenNew),
+                Some(extra) => Err(unexpected(&extra)),
+            },
+            Some(other) => Err(UsageError(format!("unknown token command {other:?}"))),
+            None => Err(UsageError("token requires new".into())),
         },
         _ => Err(UsageError(format!(
             "unknown command {:?}",
@@ -175,6 +187,19 @@ mod tests {
 
     fn p(args: &[&str]) -> Result<Command, UsageError> {
         parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn token_new_takes_no_arguments() {
+        assert_eq!(p(&["token", "new"]), Ok(Command::TokenNew));
+        for bad in [
+            &["token"][..],
+            &["token", "old"],
+            &["token", "new", "--config", "a.toml"],
+            &["token", "new", "extra"],
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

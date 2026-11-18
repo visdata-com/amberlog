@@ -1,4 +1,4 @@
-// 界面外壳（REQ-AMB-UI-CONSOLE）：顶栏（三屏切换、时区、外观、口令）与三屏。三屏始终挂载、只显示当前屏，
+// 界面外壳（REQ-AMB-UI-CONSOLE-V3）：顶栏（三屏切换、时区、外观、口令）与三屏。三屏始终挂载、只显示当前屏，
 // 所以切换不发请求、各屏已填的内容与结果都保留（SWITCH）。
 
 import { useLayoutEffect } from "preact/hooks";
@@ -11,6 +11,7 @@ import { ReconScreen } from "./screens/recon/ReconScreen.tsx";
 import { SearchScreen } from "./screens/search/SearchScreen.tsx";
 import { TimeZonePicker } from "./shell/TimeZonePicker.tsx";
 import { Select } from "./shell/Select.tsx";
+import { clickLogin, login } from "./shell/login.ts";
 import {
   confirmToken,
   setScreen,
@@ -19,6 +20,7 @@ import {
   settings,
   type Screen,
   type Theme,
+  type TokenHint,
 } from "./shell/settings.ts";
 
 const SCREENS: { id: Screen; label: string }[] = [
@@ -26,6 +28,13 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: "ledger", label: "台账" },
   { id: "recon", label: "对账" },
 ];
+
+// 口令框旁的提示（TOKEN-401 标出口令框，TOKEN-403 不标出）
+const TOKEN_HINTS: Record<TokenHint, string> = {
+  invalid: "口令无效或未填写",
+  forbidden: "当前身份没有这项操作的权限",
+  loginStopped: "登录得到的身份未通过服务端认证，已停止自动登录",
+};
 
 const THEMES: { id: Theme; label: string }[] = [
   { id: "system", label: "跟随系统" },
@@ -41,6 +50,7 @@ export function applyTheme(theme: Theme): void {
 
 function TopBar() {
   const s = useStore(settings);
+  const l = useStore(login);
   return (
     <header className="topbar">
       <span className="brand">Amberlog</span>
@@ -79,8 +89,8 @@ function TopBar() {
           type="password"
           autoComplete="off"
           placeholder="输入访问口令"
-          className={s.tokenInvalid ? "invalid" : undefined}
-          aria-invalid={s.tokenInvalid}
+          className={s.tokenHint === "invalid" ? "invalid" : undefined}
+          aria-invalid={s.tokenHint === "invalid"}
           value={s.token}
           onInput={(e) => setToken(e.currentTarget.value)}
           onBlur={confirmToken}
@@ -89,12 +99,17 @@ function TopBar() {
           }}
         />
       </label>
+      {l.config !== null && (
+        <button type="button" id="login" onClick={clickLogin}>
+          登录
+        </button>
+      )}
       <span className="note" id="token-note">
         只保存在本标签页，关闭即清除
       </span>
-      {s.tokenInvalid && (
+      {s.tokenHint !== null && (
         <span className="hint" id="token-hint">
-          口令无效或未填写
+          {TOKEN_HINTS[s.tokenHint]}
         </span>
       )}
     </header>

@@ -46,7 +46,7 @@ export function CondBox(p: CondBoxProps) {
   const [open, setOpen] = useState(false);
   const [pick, setPick] = useState(-1);
   const hints = open && p.mode === "cond" ? conditionHints(input, p.columns, p.valuesOf) : [];
-  const guidance = open && hints.length === 0 && p.error === null ? conditionDraft(input, p.columns).error : null;
+  const guidance = open && hints.length === 0 && p.error === null ? conditionDraft(input).error : null;
 
   const commit = (c: Condition | null): void => {
     if (c === null) return;
@@ -59,7 +59,7 @@ export function CondBox(p: CondBoxProps) {
     if ("condition" in h) commit(h.condition);
     else {
       // 空值运算不再需要额外输入，选择后直接添加。
-      const draft = conditionDraft(h.fill, p.columns);
+      const draft = conditionDraft(h.fill);
       if (h.kind === "op" && draft.condition?.kind === "field") commit(draft.condition);
       else p.onInput(h.fill);
       setPick(-1);
@@ -89,7 +89,7 @@ export function CondBox(p: CondBoxProps) {
       const h = hints[pick];
       if (h !== undefined) choose(h);
       else {
-        const draft = conditionDraft(input, p.columns);
+        const draft = conditionDraft(input);
         if (draft.error !== null) p.onError(draft.error);
         else commit(draft.condition);
       }

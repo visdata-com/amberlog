@@ -11,6 +11,10 @@
 //! 报告顺序（系统表另有一条）：请求体与 SQL 的各项错误在 [`crate::search::Engine::search`] 里先报完；此后没有
 //! `stream_not_found` 与数据集停用状态两位，直接按表的列集合绑定（`unknown_column`、`invalid_sql`），最后才读对象存储。
 //!
+//! 行按主体过滤（REQ-AMB-QRY-SEARCH-ENDPOINT-V10、REQ-AMB-AUTH-AUTHZ-ROW-FILTER）：生成整张表时只取主体可见的行，再交给
+//! 执行步骤，所以 `WHERE`、聚合、排序与分页只作用于可见的行；过滤不产生错误。台账与对账只为可见的数据集读对象
+//! （[`Context::datasets`]），评估记录按 `target` 过滤、要读的对象不因主体而减少（见 [`alert_evaluations`]）。
+//!
 //! 本模块只依赖窄接口：计数对象的读取由 amberlog-ingest 的治理计数提供、桶状态的判定由 amberlog-storage 的桶生命周期
 //! 提供，经接入面装配时接上（query 不依赖 ingest）。
 
@@ -39,6 +43,7 @@ use arrow::record_batch::RecordBatch;
 
 use crate::error::QueryError;
 use crate::sql::{CmpOp, Cond, Literal, Operand, Query};
+use crate::viewer::Viewer;
 use verdict::{Backfill, Judgment, judge, reported_before};
 
 /// 系统表。
@@ -206,10 +211,13 @@ pub(crate) struct Context<'a> {
     pub end_time: i64,
     /// 系统收到该查询请求的时刻（UTC 微秒）。
     pub now_us: i64,
+    /// 发出查询的主体。
+    pub viewer: &'a dyn Viewer,
 }
 
 impl Context<'_> {
-    /// 本次作答涉及的数据集：`{org}` 下存在的数据集，有点名数据集时只取被点名的，按标识的码点升序。
+    /// 本次作答涉及的数据集：`{org}` 下存在、对主体可见的数据集（REQ-AMB-GOV-LEDGER-V4、REQ-AMB-GOV-RECONCILIATION-V4），
+    /// 有点名数据集时只取被点名的，按标识的码点升序。不可见的数据集不在其中，不为它读任何对象。
     fn datasets(&self, query: &Query) -> Vec<Dataset> {
         let named = named_datasets(query);
         self.governance
@@ -218,6 +226,7 @@ impl Context<'_> {
             .into_iter()
             .filter(|d| d.org == self.org)
             .filter(|d| named.as_ref().is_none_or(|n| n.contains(&d.to_string())))
+            .filter(|d| self.viewer.sees(d))
             .collect()
     }
 }

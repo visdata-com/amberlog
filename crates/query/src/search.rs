@@ -3,8 +3,9 @@
 //! 按报告顺序推进，每一步只在前面各步都通过后才做：
 //! 1. 请求体（`invalid_json`、`invalid_request`、`invalid_time_range`）与 SQL（`invalid_sql`、`sql_unsupported`）；
 //!    `FROM` 引用系统表时转入 [`crate::system`]，以下各步只对 stream；
-//! 2. 目标 stream：`FROM` 名不合 stream 命名、或不在进程内目录中即 `stream_not_found`（只查 [`MemtableView::schema`]，
-//!    不看对象存储）；
+//! 2. 目标 stream：`FROM` 名不合 stream 命名即 `stream_not_found`；之后是授权的请求体一步（[`Viewer::decide`]，
+//!    REQ-AMB-QRY-SEARCH-ENDPOINT-V10）：403 `forbidden`，或范围外按不存在作答；再查进程内目录，不在其中即
+//!    `stream_not_found`（只查 [`MemtableView::schema`]，不看对象存储）。范围外与不存在走同一个 [`QueryError::stream_not_found`]；
 //! 3. 数据集闸门状态：两种停用状态按状态作答，不读对象存储；之后准入，取得执行名额（名额已满即 `too_many_queries`，
 //!    [`crate::limits`]，REQ-AMB-QRY-SEARCH-ENDPOINT-V7）；
 //! 4. 一致对（ADR-0021 第 3 条）：先取可见集的候选视图，再确定当前快照 Q 并读快照 Q；之后确定冷层当前版本
@@ -54,6 +55,7 @@ use crate::prune;
 use crate::request::{self, Limits, SearchRequest};
 use crate::sql::{self, Query};
 use crate::system::{self, Governance, SystemTable};
+use crate::viewer::{Decision, System, Target, Viewer};
 
 /// `_search` 用到的存储侧句柄与配置。
 #[derive(Clone)]
@@ -183,15 +185,16 @@ pub fn check_static(sql: &str) -> Result<(), QueryError> {
         return Ok(());
     }
     if !is_valid_stream_name(&query.stream) {
-        return Err(stream_not_found(&query.stream));
+        return Err(QueryError::stream_not_found(&query.stream));
     }
     Ok(())
 }
 
-fn stream_not_found(name: &str) -> QueryError {
+/// 请求体一步的 403（REQ-AMB-AUTH-AUTHZ-FORBIDDEN-RESPONSE；应答由接入面按 `forbidden` 组装）。
+fn forbidden() -> QueryError {
     QueryError::new(
-        Reason::StreamNotFound,
-        format!("stream `{name}` does not exist"),
+        Reason::Forbidden,
+        "the principal is not permitted to query this dataset",
     )
 }
 
@@ -259,13 +262,18 @@ pub struct Evaluated {
 }
 
 impl Engine {
-    /// 对 `org` 下的数据执行 `_search`。`org` 已由接入面校验。
-    pub async fn search(&self, org: &str, body: &[u8]) -> Result<SearchResponse, QueryError> {
+    /// 以主体 `viewer` 对 `org` 下的数据执行 `_search`。`org` 已由接入面校验，授权的路径一步已由接入面做完。
+    pub async fn search(
+        &self,
+        org: &str,
+        body: &[u8],
+        viewer: &dyn Viewer,
+    ) -> Result<SearchResponse, QueryError> {
         let started = Instant::now();
         // 系统收到请求的时刻：与桶生命周期共用时钟（fault-injection 下带测试时钟偏移）
         let now_us = amberlog_storage::lifecycle::now_us();
         let req = request::parse(body, &self.limits)?;
-        let out = self.run(org, &req, now_us, Caller::Search).await?;
+        let out = self.run(org, &req, now_us, Caller::Search, viewer).await?;
         Ok(SearchResponse {
             took: started.elapsed().as_millis() as u64,
             hits: render(&out.batches)?,
@@ -295,7 +303,10 @@ impl Engine {
             // 告警评估的查询不带时区（histogram 调用按 UTC 对齐）
             timezone: TimeZone::UTC,
         };
-        let out = self.run(org, &req, now_us, Caller::Evaluation).await?;
+        // 以系统身份执行，不经授权的判定（REQ-AMB-AUTH-AUTHZ-ALERT-SYSTEM-IDENTITY）
+        let out = self
+            .run(org, &req, now_us, Caller::Evaluation, &System)
+            .await?;
         let columns = out
             .schema
             .fields()
@@ -319,22 +330,33 @@ impl Engine {
         req: &SearchRequest,
         now_us: i64,
         caller: Caller,
+        viewer: &dyn Viewer,
     ) -> Result<Output, QueryError> {
         let query = sql::parse(&req.sql)?;
 
         if let Some(table) = SystemTable::from_name(&query.stream) {
+            // 能查系统表的角色已在路径一步核对过；这里只按请求体一步记下所查的表
+            if viewer.decide(Target::System(&query.stream)) == Decision::Forbidden {
+                return Err(forbidden());
+            }
             return self
-                .search_system(table, org, req, &query, now_us, caller)
+                .search_system(table, org, req, &query, now_us, caller, viewer)
                 .await;
         }
         if !is_valid_stream_name(&query.stream) {
-            return Err(stream_not_found(&query.stream));
+            return Err(QueryError::stream_not_found(&query.stream));
         }
         let dataset = Dataset::new(org, query.stream.as_str());
+        // 请求体一步：403 先于「不存在」；范围外与不存在同一个错误值，不读对象存储、不经准入
+        match viewer.decide(Target::Stream(&dataset)) {
+            Decision::Allow => {}
+            Decision::Forbidden => return Err(forbidden()),
+            Decision::Absent => return Err(QueryError::stream_not_found(&query.stream)),
+        }
         let schema = self
             .memtable
             .schema(&dataset)
-            .ok_or_else(|| stream_not_found(&query.stream))?;
+            .ok_or_else(|| QueryError::stream_not_found(&query.stream))?;
         if let Some(reason) = self.gates.state(&dataset).reason() {
             return Err(QueryError::new(reason, "dataset is disabled until restart"));
         }
@@ -433,26 +455,23 @@ impl Engine {
         }
         fault::gate("query.after_bind").await;
 
-        // 输入：可见集的代先于热层与冷层数据文件，逐批交给执行（[`scan`]）；扫描统计按规划结果计入
-        // （冷层数据文件按清单条目的字节数与记录数，REQ-AMB-QRY-CROSS-TIER-SCAN-*）
+        // 输入：可见集的代先于热层与冷层数据文件，逐批交给执行（[`scan`]）。内存表的行数在这里计入 `scan_records`；
+        // 数据文件在打开时、有要读的行组才计入（[`scan::Scanned`]，REQ-AMB-QRY-SEARCH-ENDPOINT-V10 所称被扫描；冷层数据
+        // 文件按清单条目的字节数与记录数，REQ-AMB-QRY-CROSS-TIER-V2）
         let table = table_schema(&schema);
         let ts_only = Arc::new(
             table
                 .project(&[table.index_of(TIMESTAMP_COLUMN).expect("表含 _timestamp")])
                 .expect("列号在表中"),
         );
-        let mut scan_records = 0u64;
+        let mut memtable_records = 0u64;
         let mut resident = VecDeque::new();
         for b in candidates.participating(q) {
-            scan_records += rows_in_range(&align(&ts_only, &b)?, req);
+            memtable_records += rows_in_range(&align(&ts_only, &b)?, req);
             resident.push_back(b);
         }
-        let (mut scan_bytes, mut scan_files) = (0u64, 0u64);
         let mut parts = VecDeque::new();
         for (bucket, f) in files {
-            scan_files += 1;
-            scan_bytes += f.size_bytes;
-            scan_records += f.record_count;
             parts.push_back(scan::Part::Hot {
                 bucket: bucket.to_owned(),
                 file: f,
@@ -460,16 +479,12 @@ impl Engine {
         }
         let cold_table = match cold_part {
             Some(part) => {
-                for f in part.files {
-                    scan_files += 1;
-                    scan_bytes += f.size_bytes;
-                    scan_records += f.record_count;
-                    parts.push_back(scan::Part::Cold(f));
-                }
+                parts.extend(part.files.into_iter().map(scan::Part::Cold));
                 Some(part.table)
             }
             None => None,
         };
+        let scanned = Arc::new(scan::Scanned::default());
         let source = scan::Scan::new(
             self.clone(),
             dataset,
@@ -478,6 +493,7 @@ impl Engine {
             parts,
             cold_table,
             req.start_time..req.end_time,
+            Arc::clone(&scanned),
         );
         let input = Input::new(Arc::clone(&table), Box::new(source), caller.after_input());
 
@@ -491,12 +507,14 @@ impl Engine {
             tie_break: &[],
         };
         let (schema, batches) = execute(&slot.context()?, &input, &bound, req, &order).await?;
+        // 作答成功时全部输入都已读过（执行没有取完的由 `Input::finish` 读完），计数完整
+        let counts = scanned.counts();
         Ok(Output {
             schema,
             batches,
-            scan_records,
-            scan_files,
-            scan_bytes,
+            scan_records: memtable_records + counts.records,
+            scan_files: counts.files,
+            scan_bytes: counts.bytes,
         })
     }
 }
@@ -557,7 +575,8 @@ impl Engine {
 
 impl Engine {
     /// `FROM` 引用系统表：按表的列集合绑定（`unknown_column`、`invalid_sql`），再生成整张表并执行。
-    /// 没有 `_timestamp` 附加过滤；缺省排序与同键行的次序按定义该表的块。
+    /// 没有 `_timestamp` 附加过滤；缺省排序与同键行的次序按定义该表的块。整张表只含 `viewer` 可见的行。
+    #[allow(clippy::too_many_arguments)]
     async fn search_system(
         &self,
         table: SystemTable,
@@ -566,6 +585,7 @@ impl Engine {
         query: &Query,
         now_us: i64,
         caller: Caller,
+        viewer: &dyn Viewer,
     ) -> Result<Output, QueryError> {
         let bound = bind::bind(query, &table.schema(), &req.timezone)?;
         // 准入：按表的列集合绑定之后、读取系统表所需的对象之前（REQ-AMB-QRY-SEARCH-ENDPOINT-V7）
@@ -579,6 +599,7 @@ impl Engine {
             start_time: req.start_time,
             end_time: req.end_time,
             now_us,
+            viewer,
         };
         let batch = system::table(table, &cx, query).await?;
         let order = Order {

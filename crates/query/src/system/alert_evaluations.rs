@@ -6,10 +6,14 @@
 //! 本模块按列集合绑定之后（在 [`crate::search`]），以点名规则（REQ-AMB-ALR-EVALUATIONS-NAMED-RULE，与点名数据集
 //! 同一段代码）与查询范围向 [`AlertHistory`] 取行，生成整张表交给与其他系统表相同的执行步骤；缺省次序为 `scheduled_at`
 //! 降序、`rule` 码点升序（-ORDER、-ORDER-TIES，[`super::SystemTable::default_order`]）。不缓存读到的内容。
+//!
+//! 行按所查对象 `target` 过滤（REQ-AMB-ALR-EVALUATIONS-V2-ROW-VISIBLE）：取行之后、生成表之前只留主体可见的；要读的对象
+//! 只按点名规则与查询范围定，不因主体的范围而减少（-READ-NOT-NARROWED），所以读取失败照常作答。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use amberlog_common::dataset::Dataset;
 use amberlog_common::error::Reason;
 use amberlog_common::schema::ColumnType;
 use amberlog_storage::BoxFuture;
@@ -19,7 +23,7 @@ use arrow::record_batch::RecordBatch;
 use super::{Context, SystemTable};
 use crate::error::QueryError;
 
-/// REQ-AMB-ALR-EVALUATIONS-COLUMNS 的十三列。
+/// REQ-AMB-ALR-EVALUATIONS-V2-COLUMNS 的十四列。
 pub(super) const COLUMNS: &[(&str, ColumnType)] = &[
     ("rule", ColumnType::Utf8),
     ("scheduled_at", ColumnType::Int64),
@@ -34,6 +38,7 @@ pub(super) const COLUMNS: &[(&str, ColumnType)] = &[
     ("delivery", ColumnType::Utf8),
     ("attempts", ColumnType::Int64),
     ("last_http_status", ColumnType::Int64),
+    ("target", ColumnType::Utf8),
 ];
 
 /// 生成整张表（未过滤、未排序）：`org` 为请求路径的 `{org}`，范围 `[start_time, end_time)` 作用在 `scheduled_at` 上
@@ -47,6 +52,10 @@ pub(super) async fn table(
         .alerts
         .evaluations(cx.org, rules, cx.start_time, cx.end_time)
         .await?;
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|r| visible(cx, r.target.as_deref()))
+        .collect();
     let mut rule = StringBuilder::new();
     let mut scheduled_at = Int64Builder::new();
     let mut started_at = Int64Builder::new();
@@ -60,6 +69,7 @@ pub(super) async fn table(
     let mut delivery = StringBuilder::new();
     let mut attempts = Int64Builder::new();
     let mut last_http_status = Int64Builder::new();
+    let mut target = StringBuilder::new();
     for r in &rows {
         rule.append_value(&r.rule);
         scheduled_at.append_value(r.scheduled_at);
@@ -74,6 +84,7 @@ pub(super) async fn table(
         delivery.append_value(&r.delivery);
         attempts.append_value(r.attempts);
         last_http_status.append_option(r.last_http_status);
+        target.append_option(r.target.as_deref());
     }
     let columns: Vec<ArrayRef> = vec![
         Arc::new(rule.finish()),
@@ -89,13 +100,26 @@ pub(super) async fn table(
         Arc::new(delivery.finish()),
         Arc::new(attempts.finish()),
         Arc::new(last_http_status.finish()),
+        Arc::new(target.finish()),
     ];
     RecordBatch::try_new(SystemTable::AlertEvaluations.arrow_schema(), columns)
         .map_err(|e| QueryError::internal(e.to_string()))
 }
 
-/// 一条已写出的评估记录，即 `_alert_evaluations` 的一行（REQ-AMB-ALR-EVALUATIONS-COLUMNS 的十三列；
-/// `rule` 取对象的 `rule`，其余取元素的同名字段，JSON `null` 为 `None`）。时刻均为 UTC 微秒。
+/// 由元素的 `target` 生成的行对主体可见（REQ-AMB-ALR-EVALUATIONS-V2-ROW-VISIBLE）：`target` 为 `<org>/<stream>` 时看该数据集
+/// 是否在主体对查询者或治理查看者的范围内；系统表名、`*` 或缺失时只对这两种角色的范围为全部的主体可见。
+fn visible(cx: &Context<'_>, target: Option<&str>) -> bool {
+    if cx.viewer.sees_all() {
+        return true;
+    }
+    match target.and_then(|t| t.split_once('/')) {
+        Some((org, stream)) => cx.viewer.sees(&Dataset::new(org, stream)),
+        None => false,
+    }
+}
+
+/// 一条已写出的评估记录，即 `_alert_evaluations` 的一行（REQ-AMB-ALR-EVALUATIONS-V2-COLUMNS 的十四列；
+/// `rule` 取对象的 `rule`，其余取元素的同名字段，JSON `null` 与元素缺 `target` 为 `None`）。时刻均为 UTC 微秒。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluationRow {
     pub rule: String,
@@ -111,6 +135,8 @@ pub struct EvaluationRow {
     pub delivery: String,
     pub attempts: i64,
     pub last_http_status: Option<i64>,
+    /// 该次评估所查的对象：`<org>/<stream>`、系统表名或 `*`；本块之前的版本写出的元素没有它。
+    pub target: Option<String>,
 }
 
 /// 读取评估记录对象的失败（REQ-AMB-ALR-EVALUATIONS-READ-UNAVAILABLE、-READ-UNPARSEABLE）。

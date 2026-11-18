@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amberlog</title>
+<link rel="icon" href="data:,">
+<style>:root{--lightningcss-light:initial;--lightningcss-dark: ;color-scheme:light dark;font-family:system-ui,sans-serif}@media (prefers-color-scheme:dark){:root{--lightningcss-light: ;--lightningcss-dark:initial}}main{padding:2rem}
+/*$vite$:1*/</style>
+</head>
+<body>
+<main id="callback"></main>
+<script type="module">new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]);var e=`amberlog.token`,t=`amberlog.login.state`,n=`amberlog.login.verifier`,r=`amberlog.login.from`,i=`amberlog.login.returned`;function a(e){return e+`/ui/callback`}function o(e){try{return sessionStorage.getItem(e)}catch{return null}}function s(e,t){try{sessionStorage.setItem(e,t)}catch{}}function c(e){try{sessionStorage.removeItem(e)}catch{}}var l=`登录失败`;function u(e){document.getElementById(`callback`).replaceChildren(...e.map(e=>{let t=document.createElement(`p`);return t.textContent=e,t}))}function d(){history.replaceState(null,``,location.pathname)}async function f(){let f=new URLSearchParams(location.search),p=f.get(`code`),m=f.get(`state`),h=o(t);if(d(),f.has(`error`)||p===null||m===null||h===null||m!==h){u([l]);return}let g=o(`amberlog.login.verifier`)??``,_=JSON.stringify({code:p,code_verifier:g,redirect_uri:a(location.origin)}),v,y;try{let e=fetch(`/ui/oidc/token`,{method:`POST`,headers:{"Content-Type":`application/json`},body:_});c(t),c(n),v=await e,y=await v.text()}catch{u([l]);return}if(v.status!==200){u([l,String(v.status)]);return}let b;try{b=JSON.parse(y)}catch{b=null}let x=typeof b==`object`&&b?b.access_token:void 0;typeof x==`string`?(s(e,x),s(r,`1`),s(i,`1`),location.replace(`/ui`)):u([l,String(v.status)])}f();</script>
+</body>
+</html>
