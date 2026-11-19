@@ -6,15 +6,12 @@ import { useStore } from "../lib/store.ts";
 import { formatLocal, nowUs } from "../lib/time.ts";
 import { settings } from "./settings.ts";
 import type { TimeRange } from "./TimeRange.tsx";
-import { calendarDays, chooseDate as pickDate, dateOfText, draftValue, formatRangeTime, initDraft, moveDate, rangeSummary, relativePreview, shiftMonth, weekDay, type RangeDraft } from "./time-range-picker.ts";
+import { calendarDays, draftValue, formatRangeTime, initDraft, moveDate, rangeSummary, relativePreview, selectDate, shiftMonth, weekDay, type RangeDraft } from "./time-range-picker.ts";
 import "./time-range-picker.css";
 
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 
-/**
- * 检索屏的时间范围弹层（REQ-AMB-UI-SEARCH-V4-RANGE）：只改范围，不发请求。「绝对时间」页签的起止两框即检索屏的起止输入
- * （REQ-AMB-UI-CONSOLE-V4-TIME-INPUT），可直接输入全部写法，日历只填框中的日期。台账、对账两屏用 TimeRangeInputs。
- */
+/** 三屏共用的时间编辑器：修改范围，查询仍由各屏单独触发。 */
 export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; hidden: boolean; prefix: string }) {
   const model = useStore(range.store);
   const { timezone } = useStore(settings);
@@ -47,7 +44,7 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
     if (editing.current) { close(true); return; }
     const next = currentDraft.current !== null && snapshot.current.model === range.model && snapshot.current.timezone === timezone
       ? currentDraft.current : initDraft(range.model, timezone, nowUs());
-    const date = dateOfText(next.absolute.startText) ?? formatLocal(nowUs(), timezone).slice(0, 10);
+    const date = next.absolute.startDate ?? formatLocal(nowUs(), timezone).slice(0, 10);
     editing.current = true;
     setMonth(date);
     setFocusDate(date);
@@ -188,22 +185,20 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
   const chooseDate = (date: string): void => {
     dateFocusRequested.current = true;
     setFocusDate(date); setMonth(date);
-    updateDraft(d => ({ ...d, absolute: pickDate(d.absolute, date) }));
+    updateDraft(d => ({ ...d, absolute: { ...d.absolute, ...selectDate(d.absolute, date) } }));
   };
   const value = draft === null ? null : draftValue(draft, timezone);
   const preview = draft === null || value === null || value.kind === "invalid" ? null :
     value.kind === "absolute" ? [value.start, value.end] : relativePreview(value.us, draft.previewNow);
   const dates = month === "" ? [] : calendarDays(month);
   const today = formatLocal(nowUs(), timezone).slice(0, 10);
-  const startDate = draft === null ? null : dateOfText(draft.absolute.startText);
-  const endDate = draft === null ? null : dateOfText(draft.absolute.endText);
 
   return (
     <span className="time-range-picker">
       <Button id={id + "-trigger"} ref={trigger} className="time-range-summary" aria-haspopup="dialog" aria-expanded={open}
         aria-controls={open ? id + "-panel" : undefined} aria-describedby={id + "-description"} onClick={show}>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="8" /><path d="M10 5v5l3 2" /></svg>
-        <span id={id + "-summary"} title={summary.title}>{summary.text}</span><span aria-hidden="true">{open ? "▴" : "▾"}</span>
+        <span>{summary.text}</span><span aria-hidden="true">{open ? "▴" : "▾"}</span>
       </Button>
       <span className="time-range-description" id={id + "-description"}>{summary.description}</span>
       {open && (
@@ -239,9 +234,9 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
                 <div key={row} role="row">
                   {dates.slice(row * 7, row * 7 + 7).map((day, column) => {
                     const date = day.date;
-                    const start = date !== null && date === startDate;
-                    const end = date !== null && date === endDate;
-                    const selected = date !== null && startDate !== null && endDate !== null && date >= startDate && date <= endDate;
+                    const start = date !== null && date === draft.absolute.startDate;
+                    const end = date !== null && date === draft.absolute.endDate;
+                    const selected = date !== null && draft.absolute.startDate !== null && draft.absolute.endDate !== null && date >= draft.absolute.startDate && date <= draft.absolute.endDate;
                     return <span key={date ?? column} role="gridcell" aria-selected={start || end || selected}>
                       {date !== null && <Button variant={start || end ? "primary" : "secondary"}
                         className={["time-range-day", day.inMonth ? "" : "is-other", selected ? "is-range" : "", start || end ? "is-endpoint" : ""].join(" ")}
@@ -253,22 +248,23 @@ export function TimeRangePicker({ range, hidden, prefix }: { range: TimeRange; h
                 </div>
               ))}
             </div>
-            <p className="time-range-note" id={id + "-date-help"} aria-live="polite">{draft.absolute.pick === "end" ? "点选结束日期；更早的日期将重新选择开始。" : "可直接输入起止时刻，或在日历上点选开始和结束日期。"}</p>
+            <p className="time-range-note" id={id + "-date-help"} aria-live="polite">{draft.absolute.endDate === null && draft.absolute.startDate !== null ? "请选择结束日期；更早日期将重新选择开始。" : "选择开始和结束日期，支持同日及跨月范围。"}</p>
             <div className="time-range-times">
               {(["start", "end"] as const).map(which => {
                 const error = value?.kind === "invalid" ? (which === "start" ? value.startError : value.endError) : undefined;
                 return <label key={which}>
                   <span>{which === "start" ? "开始时间" : "结束时间"}</span>
-                  <Input id={id + "-" + which} value={which === "start" ? draft.absolute.startText : draft.absolute.endText}
-                    placeholder="YYYY-MM-DD HH:MM:SS" autoComplete="off" spellcheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? id + "-error" : undefined}
-                    onInput={event => { const text = event.currentTarget.value; updateDraft(d => ({ ...d, absolute: { ...d.absolute, [which + "Text"]: text } })); }} />
+                  <span className="time-range-date">{which === "start" ? draft.absolute.startDate ?? "未选择日期" : draft.absolute.endDate ?? "未选择日期"}</span>
+                  <Input id={id + "-" + which} value={which === "start" ? draft.absolute.startTime : draft.absolute.endTime}
+                    autoComplete="off" spellcheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? id + "-error" : undefined}
+                    onInput={event => { const text = event.currentTarget.value; updateDraft(d => ({ ...d, absolute: { ...d.absolute, [which + "Time"]: text } })); }} />
                 </label>;
               })}
             </div>
           </div>
           <div className="time-range-preview">
             <span>预览范围</span>
-            {preview ? <span className="time-range-preview-value" title={formatLocal(preview[0]!, timezone) + " → " + formatLocal(preview[1]!, timezone)}>{formatRangeTime(preview[0]!, timezone)} → {formatRangeTime(preview[1]!, timezone)}</span> : <span>待完成有效时间范围</span>}
+            {preview ? <span className="time-range-preview-value">{formatRangeTime(preview[0]!, timezone)} → {formatRangeTime(preview[1]!, timezone)}</span> : <span>待完成有效时间范围</span>}
             {draft.mode === "relative" && <span className="time-range-note">相对时间以查询时刻为准，此预览不是已展示结果的范围。</span>}
           </div>
           {value?.kind === "invalid" && <p className="time-range-error" id={id + "-error"} role="status">{value.error}</p>}

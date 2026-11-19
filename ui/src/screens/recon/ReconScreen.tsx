@@ -10,13 +10,14 @@ import { entries, show } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
-import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
+import { TimeRangePicker } from "../../shell/TimeRangePicker.tsx";
 import { DatasetInput } from "../../shell/DatasetInput.tsx";
 import { Count } from "../ledger/Numbers.tsx";
 import "./recon.css";
 
 const SIZE = 10000;
-const QUICK: QuickChoice[] = [
+const QUICK: readonly QuickChoice[] = [
   { label: "最近 15 分钟", us: 15n * MINUTE_US },
   { label: "最近 1 小时", us: HOUR_US },
   { label: "最近 6 小时", us: 6n * HOUR_US },
@@ -137,7 +138,7 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
           options={list}
           onInput={(value) => setDataset(value)}
         />
-        <TimeRangeInputs range={range} prefix="r" />
+        <TimeRangePicker range={range} prefix="r" hidden={hidden} />
         <label class="field">
           <input
             type="checkbox"
