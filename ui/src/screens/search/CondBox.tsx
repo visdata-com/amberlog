@@ -2,8 +2,9 @@
 // 条件模式下每个条件是一个胶囊，SQL 模式下换成 SQL 文本框。
 
 import { Input } from "../../components/ui/Input.tsx";
-import type { ComponentChildren as ReactNode, TargetedKeyboardEvent as KeyboardEvent, TargetedEvent as SyntheticEvent } from "preact";
+import type { ComponentChildren as ReactNode, TargetedKeyboardEvent as KeyboardEvent } from "preact";
 import { useState } from "preact/hooks";
+import { SqlHighlight } from "./SqlHighlight.tsx";
 import type { ValueRow } from "./FieldsBar.tsx";
 import { conditionDraft, conditionHints, type ConditionHint } from "./conditionInput.ts";
 import type { Condition } from "./sql.ts";
@@ -97,8 +98,6 @@ export function CondBox(p: CondBoxProps) {
       p.onRemove(p.chips[p.chips.length - 1]!.id);
     }
   };
-  const cursorOf = (e: SyntheticEvent<HTMLTextAreaElement>): void => p.onCursor(e.currentTarget.selectionStart);
-
   return (
     <div className="condbox">
       <div className="query-header">
@@ -115,9 +114,9 @@ export function CondBox(p: CondBoxProps) {
       {p.mode === "cond" ? (
         <div className="condition-editor">
           <div className={p.error === null ? "chips" : "chips invalid"} id="s-conds">
-            {p.chips.map((c) => (
+            {p.chips.map((c, index) => (
               <span key={c.id} className={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
-                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{chipText(c.cond)}</span>
+                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{index > 0 ? "AND · " : ""}{chipText(c.cond)}</span>
                 <button type="button" className="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
                   ×
                 </button>
@@ -178,17 +177,7 @@ export function CondBox(p: CondBoxProps) {
           {guidance !== null && <span className="cond-guide" id="s-cond-guide">{guidance}</span>}
         </div>
       ) : (
-        <textarea
-          id="s-sql"
-          spellcheck={false}
-          aria-label="SQL"
-          placeholder="输入 SQL，如 SELECT * FROM app"
-          value={p.sql}
-          onInput={(e) => p.onSql(e.currentTarget.value, e.currentTarget.selectionStart)}
-          onClick={cursorOf}
-          onKeyUp={cursorOf}
-          onSelect={cursorOf}
-        />
+        <SqlHighlight sql={p.sql} onSql={p.onSql} onCursor={p.onCursor} />
       )}
       {p.confirming && (
         <div className="confirm" id="s-confirm">

@@ -119,14 +119,10 @@ export function FieldsBar(p: FieldsBarProps) {
                               <span class="fv-n" data-verbatim title={r.n + " 条记录"} aria-label={r.n + " 条记录"}>
                                 {r.n}
                               </span>
-                            </div>
-                            <div class="fv-actions">
-                              <button type="button" class="fv-eq" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>
-                                = 加入筛选
-                              </button>
-                              <button type="button" class="fv-ne" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>
-                                ≠ 排除此值
-                              </button>
+                              <span class="fv-actions">
+                                <button type="button" class="fv-eq" aria-label="将此值加入筛选" title="将此值加入筛选" onClick={() => p.onAdd(f.name, false, r)}>=</button>
+                                <button type="button" class="fv-ne" aria-label="排除此值" title="排除此值" onClick={() => p.onAdd(f.name, true, r)}>≠</button>
+                              </span>
                             </div>
                           </li>
                         ))}
