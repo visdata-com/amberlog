@@ -242,7 +242,7 @@ fn ui_console_no_external_requests() {
     );
     query_ledger(&mut b);
     b.eval(
-        "[...document.querySelectorAll('#l-result tbody tr')].find(tr => tr.children[0].innerText === 'default/app')\
+        "[...document.querySelectorAll('#l-result tbody tr')].find(tr => tr.children[0].innerText === 'app')\
          .querySelectorAll('button').forEach(x => { if (x.textContent === '对账') x.click(); })",
     );
     wait_requests(&mut b, 1, is_recon);
@@ -739,7 +739,7 @@ fn ui_console_value_null_dash() {
     let (_fx, s) = disabled_old(&[]);
     let mut b = open_with_token(&s);
     query_ledger(&mut b);
-    let r = row(&mut b, "l", "default/old");
+    let r = row(&mut b, "l", "old");
     let at = |b: &mut Browser, name: &str| r[col(b, "l", name)].clone();
     assert_eq!(at(&mut b, "状态"), "已停用（格式版本不兼容）");
     for name in ["首条数据时间", "末条数据时间", "条数", "字节数", "所在层"] {
@@ -1332,7 +1332,7 @@ fn ui_console_ledger_not_colored() {
     ingest_ok(&s, "web", r#"[{"a":1}]"#);
     let mut b = open_with_token(&s);
     query_ledger(&mut b);
-    for d in ["default/app", "default/web", "default/old"] {
+    for d in ["app", "web", "old"] {
         row(&mut b, "l", d);
     }
     let rows = cell_styles(&mut b, "#l-result tbody tr");
