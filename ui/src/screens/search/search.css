@@ -103,6 +103,8 @@
   text-overflow: ellipsis;
 }
 
+#search .chip-prefix { flex-shrink: 0; }
+
 /* 未生效的条件：虚线边（REQ-AMB-UI-SEARCH-STAGED） */
 #search .chip.staged {
   border-style: dashed;

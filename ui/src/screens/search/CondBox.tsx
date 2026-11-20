@@ -116,7 +116,8 @@ export function CondBox(p: CondBoxProps) {
           <div className={p.error === null ? "chips" : "chips invalid"} id="s-conds">
             {p.chips.map((c, index) => (
               <span key={c.id} className={p.applied.has(c.id) ? "chip" : "chip staged"} data-staged={!p.applied.has(c.id)}>
-                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{index > 0 ? "AND · " : ""}{chipText(c.cond)}</span>
+                {index > 0 && <span className="chip-prefix" aria-hidden="true">AND ·</span>}
+                <span className="chip-text" data-verbatim title={chipText(c.cond)}>{chipText(c.cond)}</span>
                 <button type="button" className="chip-remove" aria-label="删除条件" onClick={() => p.onRemove(c.id)}>
                   ×
                 </button>
