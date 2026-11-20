@@ -399,6 +399,7 @@ fn ui_gov_three_screens_real_data() {
         let v = ledger_cell(&mut b, "default/app", name);
         assert!(!v.is_empty(), "{name} 为空");
     }
+    assert_eq!(ledger_cell(&mut b, "default/app", "数据集"), "app");
     assert_eq!(ledger_cell(&mut b, "default/app", "对账状态"), "三方");
     assert_eq!(ledger_cell(&mut b, "default/app", "所在层"), "热层");
 
@@ -529,6 +530,7 @@ fn ui_gov_jump_to_reconciliation() {
     ledger_jump(&mut b, "default/app", "对账");
     let recon = wait_requests(&mut b, 1, is_recon).remove(0);
     assert_eq!(shown_screen(&mut b), "recon");
+    assert_eq!(b.value("r-dataset"), "app");
     assert_eq!(
         query_of(&recon)["sql"],
         json!("SELECT * FROM _reconciliation WHERE dataset = 'default/app'")
@@ -605,11 +607,15 @@ fn ui_gov_recon_default_range() {
         options.as_array().unwrap().contains(&json!("app")),
         "{options}"
     );
-    b.fill("r-dataset", "default/app");
+    b.fill("r-dataset", "app");
     let before = now_us();
     b.click("r-query");
     let r = wait_requests(&mut b, 1, is_recon).remove(0);
     let after = now_us();
+    assert_eq!(
+        query_of(&r)["sql"],
+        json!("SELECT * FROM _reconciliation WHERE dataset = 'default/app'")
+    );
     let (start, end) = range_of(&r);
     // 浏览器的此刻取 Date.now()，只到毫秒：`end_time` 可比测试记下的微秒时刻早不到 1 毫秒
     assert!(
