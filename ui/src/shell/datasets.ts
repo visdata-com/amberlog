@@ -1,5 +1,5 @@
 // 数据集列表（REQ-AMB-UI-SEARCH-DATASET-QUERY、DATASET-FROM-LEDGER）：各 `dataset` 原样（带 `default/`）。
-// 检索屏的候选查询与台账屏的查询写入，检索屏（去掉前缀的 stream 名）与对账屏（原样）读。
+// 检索屏的候选查询与台账屏的查询写入；各屏显示 stream 名，对账查询使用完整名称。
 
 import type { Hit } from "../lib/json.ts";
 import { createStore } from "../lib/store.ts";
@@ -15,4 +15,9 @@ export function setDatasets(hits: readonly Hit[]): void {
 /** `dataset` 去掉 `default/` 前缀所得的 stream 名。 */
 export function streamOf(dataset: string): string {
   return dataset.startsWith("default/") ? dataset.slice("default/".length) : dataset;
+}
+
+/** 对账查询将界面中的 stream 名还原为完整数据集名。 */
+export function datasetOf(stream: string): string {
+  return stream.includes("/") ? stream : `default/${stream}`;
 }

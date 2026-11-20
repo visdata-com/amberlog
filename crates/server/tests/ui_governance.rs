@@ -60,7 +60,7 @@ fn column(b: &mut Browser, p: &str, name: &str) -> usize {
 
 /// 台账行 `d` 中「`name`」列的一格。
 fn ledger_cell(b: &mut Browser, d: &str, name: &str) -> String {
-    let r = row(b, "l", d);
+    let r = row(b, "l", d.strip_prefix("default/").unwrap_or(d));
     let i = column(b, "l", name);
     r[i].clone()
 }
@@ -92,7 +92,7 @@ fn ledger_jump(b: &mut Browser, d: &str, label: &str) {
         "(() => {{ const tr = [...document.querySelectorAll('#l-result tbody tr')].find(tr => tr.children[0].innerText === {d}); \
          if (!tr) return false; const x = [...tr.querySelectorAll('button')].find(x => x.textContent === {label}); \
          if (!x) return false; x.click(); return true; }})()",
-        d = json!(d),
+        d = json!(d.strip_prefix("default/").unwrap_or(d)),
         label = json!(label)
     ));
     assert_eq!(clicked, json!(true), "台账行 {d} 没有「{label}」");
@@ -399,6 +399,7 @@ fn ui_gov_three_screens_real_data() {
         let v = ledger_cell(&mut b, "default/app", name);
         assert!(!v.is_empty(), "{name} 为空");
     }
+    assert_eq!(ledger_cell(&mut b, "default/app", "数据集"), "app");
     assert_eq!(ledger_cell(&mut b, "default/app", "对账状态"), "三方");
     assert_eq!(ledger_cell(&mut b, "default/app", "所在层"), "热层");
 
@@ -493,7 +494,7 @@ fn ui_gov_ledger_verdict_summary() {
             .iter()
             .position(|c| c == label)
             .unwrap_or_else(|| panic!("没有「{label}」列：{h:?}"));
-        let cell = row(&mut b, "l", "default/app")[idx].clone();
+        let cell = row(&mut b, "l", "app")[idx].clone();
         assert_eq!(cell, api[key].to_string(), "{label}");
     }
     assert_eq!(ledger_cell(&mut b, "default/app", "缺失"), "1");
@@ -529,6 +530,7 @@ fn ui_gov_jump_to_reconciliation() {
     ledger_jump(&mut b, "default/app", "对账");
     let recon = wait_requests(&mut b, 1, is_recon).remove(0);
     assert_eq!(shown_screen(&mut b), "recon");
+    assert_eq!(b.value("r-dataset"), "app");
     assert_eq!(
         query_of(&recon)["sql"],
         json!("SELECT * FROM _reconciliation WHERE dataset = 'default/app'")
@@ -580,7 +582,7 @@ fn ui_gov_ledger_no_edit() {
     wait_ledger(&s, "default/app", |h| h["record_count"] == 1);
     let mut b = open_in(&s, "UTC", |_| {});
     query_ledger(&mut b);
-    row(&mut b, "l", "default/app");
+    row(&mut b, "l", "app");
     let editable = b.eval(
         "document.querySelectorAll('#l-result input, #l-result textarea, #l-result select, \
          #l-result [contenteditable]:not([contenteditable=\"false\"])').length",
@@ -602,14 +604,18 @@ fn ui_gov_recon_default_range() {
     screen(&mut b, "recon");
     let options = b.eval("[...document.querySelectorAll('#r-datasets option')].map(o => o.value)");
     assert!(
-        options.as_array().unwrap().contains(&json!("default/app")),
+        options.as_array().unwrap().contains(&json!("app")),
         "{options}"
     );
-    b.fill("r-dataset", "default/app");
+    b.fill("r-dataset", "app");
     let before = now_us();
     b.click("r-query");
     let r = wait_requests(&mut b, 1, is_recon).remove(0);
     let after = now_us();
+    assert_eq!(
+        query_of(&r)["sql"],
+        json!("SELECT * FROM _reconciliation WHERE dataset = 'default/app'")
+    );
     let (start, end) = range_of(&r);
     // 浏览器的此刻取 Date.now()，只到毫秒：`end_time` 可比测试记下的微秒时刻早不到 1 毫秒
     assert!(
@@ -827,7 +833,7 @@ fn ui_gov_number_format() {
     assert_eq!(ledger_cell(&mut b, "default/app", "字节数"), "1.2 GiB");
     let (count, size) = (column(&mut b, "l", "条数"), column(&mut b, "l", "字节数"));
     let titles = b.eval(&format!(
-        "(() => {{ const tr = [...document.querySelectorAll('#l-result tbody tr')].find(tr => tr.children[0].innerText === 'default/app'); \
+        "(() => {{ const tr = [...document.querySelectorAll('#l-result tbody tr')].find(tr => tr.children[0].innerText === 'app'); \
          return [{count}, {size}].map(i => tr.children[i].querySelector('[title]').title); }})()"
     ));
     assert_eq!(titles, json!(["1234567", "1288490189"]));

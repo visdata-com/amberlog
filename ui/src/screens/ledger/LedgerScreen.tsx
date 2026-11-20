@@ -61,7 +61,13 @@ interface Column {
 }
 
 const COLUMNS: readonly Column[] = [
-  { label: "数据集", cell: (g) => rawText(g("dataset")) },
+  {
+    label: "数据集",
+    cell: (g) => {
+      const dataset = g("dataset");
+      return typeof dataset === "string" ? streamOf(dataset) : rawText(dataset);
+    },
+  },
   { label: "状态", cell: (g) => mapped(STATUS, g("status")) },
   {
     label: "来源",

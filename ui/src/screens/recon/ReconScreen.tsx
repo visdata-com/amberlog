@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { intOf, rawText, type Hit, type Json } from "../../lib/json.ts";
 import { useStore } from "../../lib/store.ts";
 import { DAY_US, HOUR_US, MINUTE_US } from "../../lib/time.ts";
-import { datasets } from "../../shell/datasets.ts";
+import { datasetOf, datasets, streamOf } from "../../shell/datasets.ts";
 import { entries, show } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
@@ -42,7 +42,7 @@ const sqlString = (s: string): string => "'" + s.replace(/'/g, "''") + "'";
 
 /** 对账请求的 SQL（RECON-QUERY、RECON-ONLY-NONCONSISTENT）。 */
 export function reconSql(dataset: string, onlyNonConsistent: boolean): string {
-  const sql = "SELECT * FROM _reconciliation WHERE dataset = " + sqlString(dataset);
+  const sql = "SELECT * FROM _reconciliation WHERE dataset = " + sqlString(datasetOf(dataset));
   return onlyNonConsistent ? sql + " AND verdict != 'consistent'" : sql;
 }
 
@@ -116,7 +116,7 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
   useEffect(() => {
     entries.recon = {
       jump(d, start, end) {
-        setDataset(d);
+        setDataset(streamOf(d));
         range.setRange(start, end);
         show("recon");
         latest.current(d);
@@ -135,7 +135,7 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
           listId="r-datasets"
           placeholder="选择数据集"
           value={dataset}
-          options={list}
+          options={list.map(streamOf)}
           onInput={(value) => setDataset(value)}
         />
         <TimeRangeInputs range={range} prefix="r" />
