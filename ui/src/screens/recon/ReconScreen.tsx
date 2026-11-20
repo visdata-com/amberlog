@@ -9,6 +9,7 @@ import { datasets } from "../../shell/datasets.ts";
 import { entries, show } from "../../shell/entries.ts";
 import { useResultRequest } from "../../shell/requests.ts";
 import { ResultArea } from "../../shell/ResultArea.tsx";
+import { TableScroll } from "../../shell/TableScroll.tsx";
 import { Time, TimeHeader } from "../../shell/Time.tsx";
 import { TimeRangeInputs, useTimeRange, type QuickChoice } from "../../shell/TimeRange.tsx";
 import { DatasetInput } from "../../shell/DatasetInput.tsx";
@@ -156,7 +157,7 @@ export function ReconScreen({ hidden }: { hidden: boolean }) {
         prefix="r"
         initial={{ title: "查看数据对账", description: "选择数据集和时间范围，点击「查询」核对发送、接收与持久化记录数。" }}
         emptyDescription="当前筛选下没有对账记录，可扩大时间范围、确认数据集，或检查「只看非一致」筛选。"
-        render={(hits) => <ReconTable hits={hits} />}
+        render={(hits) => <TableScroll rows={hits} label="数据对账结果"><ReconTable hits={hits} /></TableScroll>}
       />
     </section>
   );
