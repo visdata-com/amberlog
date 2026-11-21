@@ -103,6 +103,8 @@
   text-overflow: ellipsis;
 }
 
+#search .chip-prefix { flex-shrink: 0; }
+
 /* 未生效的条件：虚线边（REQ-AMB-UI-SEARCH-STAGED） */
 #search .chip.staged {
   border-style: dashed;
@@ -368,13 +370,23 @@
   box-shadow: none;
 }
 
+#search .fields-show {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#search .info .fields-show {
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
 #search .fields + .card { border-left: var(--border-default); }
 
 #search .fields {
   flex: 0 0 clamp(200px, 25%, 400px);
   min-width: 0;
-  max-height: 80vh;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
   padding: 6px;
   background: transparent;
   border: none;
@@ -497,20 +509,18 @@
 
 #search .fv-summary {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
 #search .fv-text {
   flex: 1;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: block;
   min-width: 0;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #search .fv-n {
@@ -529,18 +539,22 @@
 }
 
 #search .fv-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
   gap: 6px;
 }
 
 #search .fv-eq,
 #search .fv-ne {
-  min-width: 0;
-  min-height: 28px;
-  padding: 2px 4px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
   font-size: 12px;
-  white-space: nowrap;
+  line-height: 20px;
+  text-align: center;
 }
 
 #search .fv-ne {
@@ -726,11 +740,12 @@
   #search .condbox .modes,
   #search .condition-editor { flex-basis: 100%; }
   #search .results { display: block; }
+  #search .info .fields-show { margin-right: 6px; }
   #search .fields + .card { border-left: none; border-top: var(--border-default); }
   #search .fields {
     width: 100%;
-    max-height: 32vh;
-    margin-bottom: 0;
+    max-height: none;
+    margin-bottom: 8px;
   }
   #search .fvalues {
     max-height: min(240px, 22vh);

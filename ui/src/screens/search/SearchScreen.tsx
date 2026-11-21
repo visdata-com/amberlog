@@ -638,18 +638,6 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
                 onEnter={(value) => determine(value, true)}
               />
               <TimeRangePicker range={range} prefix="s" hidden={hidden} />
-              {fieldsCollapsed && (
-                <button
-                  type="button"
-                  id="s-fields-show"
-                  onClick={() => {
-                    saveFieldsCollapsed(false);
-                    setFieldsCollapsed(false);
-                  }}
-                >
-                  » 字段
-                </button>
-              )}
               <Button id="s-query" variant="primary" className="query-button" disabled={req.queryDisabled || blocked} onClick={() => launch(true)}>
                 {req.running ? "查询中" : "查询"}
               </Button>
@@ -730,6 +718,19 @@ export function SearchScreen({ hidden }: { hidden: boolean }) {
         )}
         <div className="card">
           <div className="info">
+            {fieldsCollapsed && (
+              <button
+                type="button"
+                id="s-fields-show"
+                className="fields-show"
+                onClick={() => {
+                  saveFieldsCollapsed(false);
+                  setFieldsCollapsed(false);
+                }}
+              >
+                » 字段
+              </button>
+            )}
             {view.kind === "idle" && <span className="result-heading">检索结果</span>}
             <span id="s-total" hidden={view.kind === "idle"}>
               {"共 " + (count === null || mode === "sql" ? "—" : String(count)) + " 条"}

@@ -1,0 +1,31 @@
+.sql-highlight-wrap { position: relative; background: var(--panel); border-radius: var(--radius-sm); }
+.sql-highlight-wrap .sql-highlight,
+#search .condbox .sql-highlight-wrap textarea {
+  box-sizing: border-box;
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: normal;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  padding: 9px;
+  border: 1px solid transparent;
+  margin: 0;
+  width: 100%;
+}
+.sql-highlight-wrap .sql-highlight { position: absolute; inset: 0; height: 100%; overflow: hidden; pointer-events: none; color: var(--text); }
+#search .condbox .sql-highlight-wrap textarea {
+  position: relative;
+  display: block;
+  min-height: 160px;
+  color: transparent;
+  caret-color: var(--text);
+  background: transparent;
+  border-color: var(--line-strong);
+  resize: vertical;
+}
+.sql-keyword { color: var(--link); }
+.sql-string { color: var(--success); }
+.sql-number { color: var(--warning); }
+.sql-comment { color: var(--muted); }
+.sql-ident { color: var(--text); }

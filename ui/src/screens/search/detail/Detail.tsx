@@ -72,6 +72,14 @@ export function Detail(p: DetailProps) {
     setEdge(null);
   }, [p.index]);
 
+  useLayoutEffect(() => {
+    const previous = document.activeElement;
+    dialogRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+
   // 键盘：渲染提交后同步挂上（浮层一出现就能收到按键），只挂一次，经 ref 取此刻的处理
   const keys = useRef({ move, onClose: p.onClose });
   keys.current = { move, onClose: p.onClose };
@@ -80,6 +88,18 @@ export function Detail(p: DetailProps) {
       if (e.key === "Escape") {
         e.preventDefault();
         keys.current.onClose();
+      } else if (e.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const items = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+          .filter(item => item.getClientRects().length > 0);
+        const first = items[0], last = items[items.length - 1];
+        if (!first || !last) { e.preventDefault(); dialog.focus(); return; }
+        if (!dialog.contains(document.activeElement) || document.activeElement === dialog ||
+            (e.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
       } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !inInput(e)) {
         e.preventDefault();
         keys.current.move(e.key === "ArrowUp" ? -1 : 1);
