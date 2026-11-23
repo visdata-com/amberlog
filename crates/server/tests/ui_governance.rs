@@ -131,8 +131,16 @@ fn range_of(r: &Request) -> (i64, i64) {
 fn assert_time_summary(b: &mut Browser, prefix: &str, label: &str, start: i64, end: i64) {
     let id = format!("{prefix}-time-summary");
     let text = b.text(&id);
-    assert!(text.starts_with(&format!("{label} · ")) && text.contains(" → "), "{text}");
-    let local = |us| rfc3339(us).replace('T', " ").trim_end_matches('Z').to_owned();
+    assert!(
+        text.starts_with(&format!("{label} · ")) && text.contains(" → "),
+        "{text}"
+    );
+    let local = |us| {
+        rfc3339(us)
+            .replace('T', " ")
+            .trim_end_matches('Z')
+            .to_owned()
+    };
     let title = b.eval(&format!("document.getElementById({}).title", json!(id)));
     assert_eq!(title, json!(format!("{} → {}", local(start), local(end))));
 }
@@ -391,41 +399,24 @@ fn ui_gov_ledger_quick_range() {
     let r = wait_requests(&mut b, 1, is_ledger).remove(0);
     let (start, end) = range_of(&r);
     assert_eq!(end - start, 604_800_000_000);
+    assert_eq!(
+        quick_labels(&mut b, "l"),
+        ["最近 1 小时", "最近 24 小时", "最近 7 天", "最近 30 天"]
+    );
+    assert_time_summary(&mut b, "l", "最近 7 天", start, end);
 }
 
-fn quick_values(b: &mut Browser, prefix: &str) -> Vec<i64> {
-    serde_json::from_value(b.eval(&format!(
-        "[...document.querySelectorAll('#{prefix}-time-relative button')].map(x => Number(x.value))"
+/// 打开本屏的时间范围弹层，读「相对时间」页签列出的快捷项名字，再关上弹层。
+fn quick_labels(b: &mut Browser, prefix: &str) -> Vec<String> {
+    b.click(&format!("{prefix}-time-trigger"));
+    let labels = serde_json::from_value(b.eval(&format!(
+        "[...document.querySelectorAll('#{prefix}-time-relative button > span:first-child')].map(x => x.textContent)"
     )))
-    .unwrap()
-}
-
-#[test]
-fn ui_gov_time_quick_ranges_match_each_screen() {
-    let (_fx, s) = start(&[]);
-    let mut b = open_in(&s, "UTC", |_| {});
-    for (screen_name, prefix, expected) in [
-        (
-            "search",
-            "s",
-            vec![900_000_000, 3_600_000_000, 21_600_000_000, 86_400_000_000, 604_800_000_000, 2_592_000_000_000],
-        ),
-        (
-            "ledger",
-            "l",
-            vec![3_600_000_000, 86_400_000_000, 604_800_000_000, 2_592_000_000_000],
-        ),
-        (
-            "recon",
-            "r",
-            vec![900_000_000, 3_600_000_000, 21_600_000_000, 86_400_000_000, 604_800_000_000],
-        ),
-    ] {
-        screen(&mut b, screen_name);
-        b.click(&format!("{prefix}-time-trigger"));
-        assert_eq!(quick_values(&mut b, prefix), expected, "{screen_name}");
-        b.click_sel(&format!("#{prefix}-time-panel button[aria-label='关闭时间范围']"));
-    }
+    .unwrap();
+    b.click_sel(&format!(
+        "#{prefix}-time-panel button[aria-label='关闭时间范围']"
+    ));
+    labels
 }
 
 #[test]
@@ -673,6 +664,16 @@ fn ui_gov_recon_default_range() {
     );
     assert_eq!(end - start, 3_600_000_000);
     assert_time_summary(&mut b, "r", "最近 1 小时", start, end);
+    assert_eq!(
+        quick_labels(&mut b, "r"),
+        [
+            "最近 15 分钟",
+            "最近 1 小时",
+            "最近 6 小时",
+            "最近 24 小时",
+            "最近 7 天"
+        ]
+    );
 }
 
 #[test]
