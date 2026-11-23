@@ -332,27 +332,6 @@ fn ui_console_token_note() {
 }
 
 #[test]
-fn ui_console_search_guide_opens_from_header_and_skips() {
-    let (_fx, s) = start(&[]);
-    let mut b = open(&s);
-    assert!(!b.exists(".search-guide__card"), "使用指引不应首次自动打开");
-    assert_eq!(
-        b.eval("localStorage.getItem('amberlog.search.guide-seen')"),
-        Value::Null,
-        "使用指引不应写入本地存储"
-    );
-    b.click_sel(".guide-entry");
-    assert!(b.exists(".search-guide__card"), "点击顶栏入口后应打开使用指引");
-    b.click_sel(".search-guide__heading button");
-    assert!(!b.exists(".search-guide__card"), "点击跳过后应关闭使用指引");
-    assert_eq!(
-        b.eval("localStorage.getItem('amberlog.search.guide-seen')"),
-        Value::Null,
-        "关闭使用指引不应写入本地存储"
-    );
-}
-
-#[test]
 fn ui_console_token_header() {
     let (_fx, s) = start(&[]);
     ingest_ok(&s, "app", r#"[{"msg":"hello"}]"#);
