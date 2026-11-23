@@ -128,6 +128,15 @@ fn range_of(r: &Request) -> (i64, i64) {
     )
 }
 
+fn assert_time_summary(b: &mut Browser, prefix: &str, label: &str, start: i64, end: i64) {
+    let id = format!("{prefix}-time-summary");
+    let text = b.text(&id);
+    assert!(text.starts_with(&format!("{label} · ")) && text.contains(" → "), "{text}");
+    let local = |us| rfc3339(us).replace('T', " ").trim_end_matches('Z').to_owned();
+    let title = b.eval(&format!("document.getElementById({}).title", json!(id)));
+    assert_eq!(title, json!(format!("{} → {}", local(start), local(end))));
+}
+
 /// 对账表格的数据行（各格文字）。
 fn recon_rows(b: &mut Browser) -> Vec<Vec<String>> {
     let v = b.eval(
@@ -369,6 +378,7 @@ fn ui_gov_ledger_default_query() {
         "{before} ≤ {end} ≤ {after}"
     );
     assert_eq!(end - start, 86_400_000_000);
+    assert_time_summary(&mut b, "l", "最近 24 小时", start, end);
 }
 
 #[test]
@@ -662,6 +672,7 @@ fn ui_gov_recon_default_range() {
         "{before} ≤ {end} ≤ {after}"
     );
     assert_eq!(end - start, 3_600_000_000);
+    assert_time_summary(&mut b, "r", "最近 1 小时", start, end);
 }
 
 #[test]

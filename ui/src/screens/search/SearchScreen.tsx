@@ -42,7 +42,7 @@ import "./search.css";
 
 const SIZE = 100;
 const HIST_SIZE = 1000;
-const QUICK: readonly QuickChoice[] = [
+const QUICK: QuickChoice[] = [
   { label: "最近 15 分钟", us: 15n * MINUTE_US },
   { label: "最近 1 小时", us: HOUR_US },
   { label: "最近 6 小时", us: 6n * HOUR_US },
@@ -50,6 +50,7 @@ const QUICK: readonly QuickChoice[] = [
   { label: "最近 7 天", us: 7n * DAY_US },
   { label: "最近 30 天", us: 30n * DAY_US },
 ];
+
 /** 分布图收起与显示的状态（REQ-AMB-UI-SEARCH-HIST-COLLAPSE），存浏览器本地存储。 */
 const HIST_KEY = "amberlog.search.histogram";
 function loadCollapsed(): boolean {

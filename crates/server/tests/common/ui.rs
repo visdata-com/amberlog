@@ -3,7 +3,8 @@
 //!
 //! 元素 id（用户看不到，只给测试用）：顶栏 `token`、`tz`、`theme`，屏切换为 `nav button[data-screen=search|ledger|recon]`；
 //! 三屏各以 `s-`、`l-`、`r-` 为前缀：`#<p>-query`（「查询」）、`#<p>-result`（结果区）、`#<p>-cancel`（「取消」）；
-//! 三屏都使用 `#<p>-time-trigger` 时间弹层，
+//! 三屏用 `#<p>-time-trigger` 打开时间范围弹层，在绝对时间页签用 `#<p>-time-start`、`#<p>-time-end` 输入，
+//! 摘要为 `#<p>-time-summary`，
 //! 另有 `#s-stream`、`#s-mode-cond`、`#s-mode-sql`、`#s-sql`，
 //! 对账屏另有 `#r-dataset`。其余 id 由各屏的测试文件在文件头写明。
 
@@ -53,7 +54,7 @@ pub fn fill_token(b: &mut Browser, token: &str) {
     b.blur("token");
 }
 
-/// 打开时间弹层；控件修改不执行查询。
+/// 打开指定屏幕的时间弹层；控件修改不执行查询。
 fn open_time(b: &mut Browser, prefix: &str) {
     let panel = format!("{prefix}-time-panel");
     if !b.exists(&format!("#{panel}")) {
@@ -71,37 +72,12 @@ fn close_time(b: &mut Browser, prefix: &str) {
     ));
 }
 
-/// 通过日历选择日期，月份导航和点选都经过真实控件。
-fn time_date(b: &mut Browser, prefix: &str, date: &str) {
-    let target = date[..4].parse::<i32>().unwrap() * 12 + date[5..7].parse::<i32>().unwrap();
-    for _ in 0..24 {
-        let shown = b.text(&format!("{prefix}-time-month"));
-        let pieces: Vec<_> = shown.split_whitespace().collect();
-        let current = pieces[0].parse::<i32>().unwrap() * 12 + pieces[2].parse::<i32>().unwrap();
-        if current == target {
-            b.click_sel(&format!(
-                "#{prefix}-time-panel button[data-date={}]",
-                json!(date)
-            ));
-            return;
-        }
-        b.click_sel(if current < target {
-            &format!("#{prefix}-time-panel button[aria-label='下个月']")
-        } else {
-            &format!("#{prefix}-time-panel button[aria-label='上个月']")
-        });
-    }
-    panic!("无法导航到日期 {date}");
-}
-
-/// 通过日历和时间框设置绝对范围；文本按页面所选时区解释。
+/// 在指定屏幕的绝对时间页签填入完整起止时刻，不发请求。
 pub fn time_range(b: &mut Browser, prefix: &str, start: &str, end: &str) {
     open_time(b, prefix);
     b.click(&format!("{prefix}-time-tab-absolute"));
-    time_date(b, prefix, &start[..10]);
-    time_date(b, prefix, &end[..10]);
-    b.fill(&format!("{prefix}-time-start"), &start[11..]);
-    b.fill(&format!("{prefix}-time-end"), &end[11..]);
+    b.fill(&format!("{prefix}-time-start"), start);
+    b.fill(&format!("{prefix}-time-end"), end);
     close_time(b, prefix);
 }
 
@@ -109,7 +85,18 @@ pub fn search_range(b: &mut Browser, start: &str, end: &str) {
     time_range(b, "s", start, end);
 }
 
-/// 选择相对时间快捷项。
+/// 打开检索屏的时间范围弹层并切到「绝对时间」页签（不关闭）：读起止两框或逐框填写时用。
+pub fn open_search_absolute(b: &mut Browser) {
+    open_time(b, "s");
+    b.click("s-time-tab-absolute");
+}
+
+/// 关闭检索屏的时间范围弹层。
+pub fn close_search_range(b: &mut Browser) {
+    close_time(b, "s");
+}
+
+/// 选择指定屏幕的相对时间快捷项。
 pub fn time_quick(b: &mut Browser, prefix: &str, us: i64) {
     open_time(b, prefix);
     b.click(&format!("{prefix}-time-tab-relative"));
@@ -121,11 +108,11 @@ pub fn search_quick(b: &mut Browser, us: i64) {
     time_quick(b, "s", us);
 }
 
-/// 把检索的开始时间改为无效输入，用于验证不发请求与旧结果保留。
+/// 把检索的起点改为不合写法的文字，用于验证不发请求与旧结果保留。
 pub fn invalidate_search_time(b: &mut Browser) {
     open_time(b, "s");
     b.click("s-time-tab-absolute");
-    b.fill("s-time-start", "25:00");
+    b.fill("s-time-start", "2026/10/16 8点");
     close_time(b, "s");
 }
 
@@ -237,7 +224,8 @@ pub fn shown_screen(b: &mut Browser) -> String {
 pub fn settled_js(p: &str) -> String {
     format!(
         "(() => {{ const r = document.getElementById('{p}-result'); \
-         return r !== null && r.querySelector('.stale') === null && r.innerText.trim() !== ''; }})()"
+         return r !== null && r.getAttribute('aria-busy') !== 'true' && r.querySelector('.stale') === null \
+         && r.innerText.trim() !== ''; }})()"
     )
 }
 
@@ -271,13 +259,16 @@ pub fn query_ledger(b: &mut Browser) {
     wait_settled(b, "l");
 }
 
-/// 结果区里表格的表头（各格文字）：表头有几行时取最后一行（台账屏的判定汇总在上一行另有组名），它与数据行逐格对应。
+/// 结果区里表格的表头（各格文字，不含检索屏列头里「隐藏列」按钮的文字）：表头有几行时取最后一行（台账屏的判定汇总在上一行另有组名），
+/// 它与数据行逐格对应。
 pub fn header(b: &mut Browser, p: &str) -> Vec<String> {
     let v = b.eval(&format!(
         "(() => {{ const t = document.querySelector('#{p}-result table'); if (t === null) return []; \
          const rows = t.tHead !== null && t.tHead.rows.length > 0 ? t.tHead.rows : t.rows; \
          const last = rows[rows.length - 1]; \
-         return last === undefined ? [] : [...last.children].map(c => c.innerText); }})()"
+         return last === undefined ? [] : [...last.children].map(c => {{ let t = c.innerText; \
+         const h = c.querySelector('.hide'); if (h !== null && t.endsWith(h.innerText)) t = t.slice(0, -h.innerText.length); \
+         return t.trim(); }}); }})()"
     ));
     serde_json::from_value(v).unwrap()
 }
