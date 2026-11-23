@@ -98,12 +98,19 @@ fn ledger_jump(b: &mut Browser, d: &str, label: &str) {
     assert_eq!(clicked, json!(true), "台账行 {d} 没有「{label}」");
 }
 
+fn utc_range(b: &mut Browser, prefix: &str, start: i64, end: i64) {
+    let local = |us| {
+        let text = rfc3339(us);
+        format!("{} {}", &text[..10], &text[11..19])
+    };
+    time_range(b, prefix, &local(start), &local(end));
+}
+
 /// 对账屏以数据集 `d` 与起止 `[start, end)`（RFC 3339）查询，等结果区出结果。
 fn query_recon(b: &mut Browser, d: &str, start: i64, end: i64) {
     screen(b, "recon");
     b.fill("r-dataset", d);
-    b.fill("r-start", &rfc3339(start));
-    b.fill("r-end", &rfc3339(end));
+    utc_range(b, "r", start, end);
     b.click("r-query");
     wait_settled(b, "r");
 }
@@ -119,6 +126,23 @@ fn range_of(r: &Request) -> (i64, i64) {
         q["start_time"].as_i64().unwrap(),
         q["end_time"].as_i64().unwrap(),
     )
+}
+
+fn assert_time_summary(b: &mut Browser, prefix: &str, label: &str, start: i64, end: i64) {
+    let id = format!("{prefix}-time-summary");
+    let text = b.text(&id);
+    assert!(
+        text.starts_with(&format!("{label} · ")) && text.contains(" → "),
+        "{text}"
+    );
+    let local = |us| {
+        rfc3339(us)
+            .replace('T', " ")
+            .trim_end_matches('Z')
+            .to_owned()
+    };
+    let title = b.eval(&format!("document.getElementById({}).title", json!(id)));
+    assert_eq!(title, json!(format!("{} → {}", local(start), local(end))));
 }
 
 /// 对账表格的数据行（各格文字）。
@@ -329,8 +353,7 @@ fn six_verdicts(b: &mut Browser, i: &Instance) -> Vec<i64> {
     i.wait_accepting(PAST_GRACE);
     screen(b, "recon");
     b.fill("r-dataset", "default/app");
-    b.fill("r-start", &rfc3339(w[0]));
-    b.fill("r-end", &rfc3339(w[5] + MINUTE_US));
+    utc_range(b, "r", w[0], w[5] + MINUTE_US);
     // 迟到的发送数上报：`bf` 此后一个宽限期内补发中（窗口取此前第 5 个小时，不在查询范围内）
     common::missed::report(&i.server, "app", "bf", hour_ago(5), 1);
     b.click("r-query");
@@ -363,6 +386,7 @@ fn ui_gov_ledger_default_query() {
         "{before} ≤ {end} ≤ {after}"
     );
     assert_eq!(end - start, 86_400_000_000);
+    assert_time_summary(&mut b, "l", "最近 24 小时", start, end);
 }
 
 #[test]
@@ -370,11 +394,29 @@ fn ui_gov_ledger_quick_range() {
     let (_fx, s) = start(&[]);
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "ledger");
-    b.select("l-quick", "604800000000");
+    time_quick(&mut b, "l", 604_800_000_000);
     b.click("l-query");
     let r = wait_requests(&mut b, 1, is_ledger).remove(0);
     let (start, end) = range_of(&r);
     assert_eq!(end - start, 604_800_000_000);
+    assert_eq!(
+        quick_labels(&mut b, "l"),
+        ["最近 1 小时", "最近 24 小时", "最近 7 天", "最近 30 天"]
+    );
+    assert_time_summary(&mut b, "l", "最近 7 天", start, end);
+}
+
+/// 打开本屏的时间范围弹层，读「相对时间」页签列出的快捷项名字，再关上弹层。
+fn quick_labels(b: &mut Browser, prefix: &str) -> Vec<String> {
+    b.click(&format!("{prefix}-time-trigger"));
+    let labels = serde_json::from_value(b.eval(&format!(
+        "[...document.querySelectorAll('#{prefix}-time-relative button > span:first-child')].map(x => x.textContent)"
+    )))
+    .unwrap();
+    b.click_sel(&format!(
+        "#{prefix}-time-panel button[aria-label='关闭时间范围']"
+    ));
+    labels
 }
 
 #[test]
@@ -521,8 +563,7 @@ fn ui_gov_jump_to_reconciliation() {
     create_stream(&s, "app");
     let mut b = open_in(&s, "UTC", |_| {});
     screen(&mut b, "ledger");
-    b.fill("l-start", "2026-10-16 08:00");
-    b.fill("l-end", "2026-10-16 09:00");
+    time_range(&mut b, "l", "2026-10-16 08:00", "2026-10-16 09:00");
     b.click("l-query");
     wait_settled(&mut b, "l");
     let ledger = requests_where(&mut b, is_ledger).pop().unwrap();
@@ -565,8 +606,7 @@ fn ui_gov_time_columns_timezone() {
     let mut b = open_in(&i.server, "Asia/Shanghai", |_| {});
     screen(&mut b, "recon");
     b.fill("r-dataset", "default/app");
-    b.fill("r-start", "2026-10-16 16:00");
-    b.fill("r-end", "2026-10-16 16:05");
+    time_range(&mut b, "r", "2026-10-16 16:00", "2026-10-16 16:05");
     b.click("r-query");
     wait_settled(&mut b, "r");
     let rows = recon_rows(&mut b);
@@ -623,6 +663,17 @@ fn ui_gov_recon_default_range() {
         "{before} ≤ {end} ≤ {after}"
     );
     assert_eq!(end - start, 3_600_000_000);
+    assert_time_summary(&mut b, "r", "最近 1 小时", start, end);
+    assert_eq!(
+        quick_labels(&mut b, "r"),
+        [
+            "最近 15 分钟",
+            "最近 1 小时",
+            "最近 6 小时",
+            "最近 24 小时",
+            "最近 7 天"
+        ]
+    );
 }
 
 #[test]

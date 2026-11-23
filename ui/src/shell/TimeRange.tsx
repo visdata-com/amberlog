@@ -2,10 +2,9 @@
 // 用户编辑该框之后按所选时区换算一次，快捷项、缩放与跳转写入的是时刻；改时区只重显框里的写法，不改范围。
 
 import { useEffect, useMemo } from "preact/hooks";
-import { createStore, useStore, type Store } from "../lib/store.ts";
-import { formatLocal, nowUs, parseTimeInput } from "../lib/time.ts";
+import { createStore, type Store } from "../lib/store.ts";
+import { nowUs } from "../lib/time.ts";
 import { settings } from "./settings.ts";
-import { Select } from "./Select.tsx";
 
 export interface QuickChoice {
   label: string;
@@ -72,12 +71,6 @@ export class TimeRange {
     this.store.set({ quick: us, start: now - us, end: now, startText: null, endText: null, queried: false });
   }
 
-  /** 用户编辑起点或止点框：按此刻的所选时区换算，改为自定义范围。 */
-  edit(which: "start" | "end", text: string): void {
-    const v = parseTimeInput(text, settings.get().timezone);
-    this.store.set(which === "start" ? { quick: null, start: v, startText: text } : { quick: null, end: v, endText: text });
-  }
-
   /** 所选时区改变：已换算的框改按新时区重显（写法不合的文字留着）。 */
   redisplay(): void {
     const m = this.model;
@@ -102,52 +95,4 @@ export function useTimeRange(choices: readonly QuickChoice[], initial: bigint): 
     });
   }, [r]);
   return r;
-}
-
-const CUSTOM = "";
-
-/** 起止框（`#<p>-start`、`#<p>-end`）与快捷项（`#<p>-quick`）。 */
-export function TimeRangeInputs({ range, prefix }: { range: TimeRange; prefix: string }) {
-  const m = useStore(range.store);
-  const { timezone } = useStore(settings);
-  const shown = (v: bigint | null, text: string | null): string =>
-    text !== null ? text : v === null ? "" : formatLocal(v, timezone);
-  return (
-    <span class="range">
-      <input
-        id={prefix + "-start"}
-        class="time-input"
-        autocomplete="off"
-        spellcheck={false}
-        aria-label="起"
-        placeholder="开始时间（YYYY-MM-DD HH:mm）"
-        value={shown(m.start, m.startText)}
-        onInput={(e) => range.edit("start", e.currentTarget.value)}
-      />
-      <span class="arrow">→</span>
-      <input
-        id={prefix + "-end"}
-        class="time-input"
-        autocomplete="off"
-        spellcheck={false}
-        aria-label="止"
-        placeholder="结束时间（YYYY-MM-DD HH:mm）"
-        value={shown(m.end, m.endText)}
-        onInput={(e) => range.edit("end", e.currentTarget.value)}
-      />
-      <Select
-        id={prefix + "-quick"}
-        aria-label="快捷时间范围"
-        placeholder="选择时间范围"
-        value={m.quick === null ? CUSTOM : String(m.quick)}
-        options={[
-          { value: CUSTOM, label: "自定义" },
-          ...range.choices.map((c) => ({ value: String(c.us), label: c.label })),
-        ]}
-        onChange={(value) => {
-          if (value !== CUSTOM) range.setQuick(BigInt(value));
-        }}
-      />
-    </span>
-  );
 }
