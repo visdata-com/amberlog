@@ -229,7 +229,12 @@ textarea,
   letter-spacing: 0.01em;
 }
 
+.topbar__primary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+
 .topbar nav { display: flex; gap: 4px; }
+
+.topbar .guide-entry { min-height: 32px; border-color: transparent; background: transparent; color: var(--muted); }
+.topbar .guide-entry:hover:not(:disabled) { border-color: transparent; }
 
 .topbar nav button {
   min-height: 32px;
@@ -616,6 +621,7 @@ tbody tr:last-child td { border-bottom: none; }
 
 @media (max-width: 640px) {
   .topbar { position: static; padding-block: 8px; }
+  .topbar nav button, .topbar .guide-entry { min-height: 44px; }
   .topbar .field,
   .topbar .note,
   .topbar .hint { flex: 1 1 100%; }
@@ -647,4 +653,5 @@ tbody tr:last-child td { border-bottom: none; }
   }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: -6px; }
   .custom-select__option { min-height: 44px; }
+  .topbar__primary button { padding-inline: 6px; }
 }

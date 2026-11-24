@@ -2736,3 +2736,91 @@ fn ui_search_history_clear() {
     b.reopen(&url(&s));
     assert_eq!(history_items(&mut b), Vec::<Value>::new());
 }
+
+// ---------------------------------------------------------------------------
+// guide — 使用指引（REQ-AMB-UI-SEARCH-V5 L 组；元素：顶栏 `.guide-entry`「使用指引」、
+// 指引卡片 `.search-guide__card`，步数 `.search-guide__heading span`「i / n」，
+// 关闭为 `.search-guide__heading button`，下一步 `.search-guide__next`）
+// ---------------------------------------------------------------------------
+
+/// 使用指引卡片上的步数文字（「i / n」）。
+fn guide_step(b: &mut Browser) -> String {
+    b.eval("document.querySelector('.search-guide__heading span')?.innerText ?? ''")
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// 检索屏的数据集、时间范围摘要、条件与本地存储的键。
+fn guide_snapshot(b: &mut Browser) -> (String, String, Vec<(String, bool)>, Value) {
+    (
+        b.value("s-stream"),
+        b.text("s-time-trigger"),
+        chips(b),
+        b.eval("Object.keys(localStorage).sort()"),
+    )
+}
+
+#[test]
+fn ui_search_guide_on_demand() {
+    let (_fx, s) = start(&[]);
+    let mut b = open_in(&s, "UTC", |_| {});
+    screen(&mut b, "search");
+    b.fill("s-stream", "app");
+    b.blur("s-stream");
+    add(&mut b, "level = 'error'");
+    // 等数据集确定后可能发出的字段请求落定，再记下请求数
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(!b.exists(".search-guide__card"), "打开页面后显示了使用指引");
+    let before = guide_snapshot(&mut b);
+    let n = b.requests_besides_ui().len();
+
+    b.click_sel(".guide-entry");
+    assert!(
+        b.wait_until(
+            "document.querySelector('.search-guide__card') !== null",
+            WAIT
+        ),
+        "点「使用指引」后没有显示"
+    );
+    let first = guide_step(&mut b);
+    b.click_sel(".search-guide__next");
+    assert!(
+        b.wait_until(
+            &format!(
+                "(document.querySelector('.search-guide__heading span')?.innerText ?? '') !== {}",
+                json!(first)
+            ),
+            WAIT
+        ),
+        "没有翻到下一步"
+    );
+    let second = guide_step(&mut b);
+    b.eval(
+        "[...document.querySelectorAll('.search-guide__actions button')]\
+         .find(x => x.textContent === '上一步').click()",
+    );
+    assert!(
+        b.wait_until(
+            &format!(
+                "(document.querySelector('.search-guide__heading span')?.innerText ?? '') === {}",
+                json!(first)
+            ),
+            WAIT
+        ),
+        "没有翻回上一步（翻到下一步时为 {second}）"
+    );
+    b.click_sel(".search-guide__heading button");
+    assert!(
+        b.wait_until(
+            "document.querySelector('.search-guide__card') === null",
+            WAIT
+        ),
+        "关闭后仍显示使用指引"
+    );
+
+    std::thread::sleep(Duration::from_secs(1));
+    let after = b.requests_besides_ui();
+    assert_eq!(after.len(), n, "使用指引发出了请求：{:?}", &after[n..]);
+    assert_eq!(guide_snapshot(&mut b), before);
+}

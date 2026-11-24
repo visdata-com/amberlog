@@ -1,0 +1,12 @@
+.search-guide { position: fixed; inset: 0; z-index: 100; pointer-events: none; }
+.search-guide__mask { position: fixed; background: rgba(13, 22, 30, 0.68); pointer-events: auto; }
+.search-guide__highlight { position: fixed; border: 2px solid var(--focus); border-radius: 6px; box-shadow: 0 0 0 3px var(--panel); pointer-events: auto; }
+.search-guide__card { position: fixed; width: min(340px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-raised); color: var(--text); box-shadow: var(--shadow-md); pointer-events: auto; }
+.search-guide__heading, .search-guide__actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.search-guide__heading { color: var(--muted); font-size: 12px; }
+.search-guide__heading button { border: 0; background: transparent; color: var(--muted); }
+.search-guide__card h2 { margin: 12px 0 6px; font-size: 16px; }
+.search-guide__card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.search-guide__actions { justify-content: flex-end; }
+.search-guide__next, .search-guide__next:hover:not(:disabled) { background: var(--button); border-color: var(--button); color: var(--button-text); }
+.search-guide__next:hover:not(:disabled) { background: var(--button-hover); border-color: var(--button-hover); }
