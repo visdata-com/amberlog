@@ -18,8 +18,8 @@ amberlog-storage = { path = "crates/storage" }
 amberlog-query = { path = "crates/query" }
 
 datafusion = "55.1.0"
-arrow = "59.3.0"
-parquet = "59.3.0"
+arrow = "59.3.3"
+parquet = "59.3.3"
 object_store = { version = "0.13.2", features = ["aws"] }
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b154603a710d730d2f43f8af4db257cc137237ef" }
 axum = "0.8.9"

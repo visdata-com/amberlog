@@ -80,4 +80,11 @@ ignore = [
     { id = "RUSTSEC-2026-0391", reason = "zstd with_context 复用上下文时上一段流的数据泄入下一段。依赖图里没有调用 with_context。复查条件：DataFusion 发布依赖 arrow、parquet >= 60 的版本且 apache-avro 换到 zstd >= 0.14.3 时，一起升级并删除本条" },
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe Seekable::decompress 越界设置 Vec 长度。seekable 特性没有打开。复查条件同 RUSTSEC-2026-0391" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe DCtx::decompress_stream 解压 legacy 帧失败时暴露未初始化内存，经 stream::write::Decoder 可达；通告写明 stream::read::Decoder、decode_all 与 bulk 接口不受影响。依赖图里没有用 stream::write::Decoder。复查条件同 RUSTSEC-2026-0391" },
+    # 下面三条是「不再维护」通告，不是漏洞通告：通告没有列出已知漏洞，也没有可升级的修复版本。
+    # 本仓各 crate 都不直接依赖这三个包（cargo tree -i 核对过）：
+    # chrono 0.4.45 经 arrow 59 与 DataFusion 55 引入，chrono-tz 0.10.4 经 arrow-array 与 datafusion-functions 引入，
+    # humantime 2.4.0 经 object_store 0.13.2 引入。arrow、parquet、object_store 须与 DataFusion 所依赖的版本一致，只能等上游换掉。
+    { id = "RUSTSEC-2026-0543", reason = "chrono 不再维护（无已知漏洞），经 arrow 与 DataFusion 间接引入。复查条件：DataFusion、arrow、parquet、object_store 四者一起升级时，新版本不再依赖 chrono 就删除本条" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz 不再维护（无已知漏洞），经 arrow-array 与 datafusion-functions 间接引入。复查条件同 RUSTSEC-2026-0543" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime 不再维护（无已知漏洞；它包装 chrono，随 chrono 一起停止维护），经 object_store 间接引入。复查条件：object_store 随 DataFusion 一起升级时，新版本不再依赖 humantime 就删除本条" },
 ]

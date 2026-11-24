@@ -63,7 +63,10 @@ if [ "$arch" = aarch64 ]; then
   for rpm in /tmp/rpms-aarch64/*.rpm; do (cd "$sysroot" && rpm2cpio "$rpm" | cpio -idm --quiet); done
 fi
 
-retry curl -sSfL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"
+# 安装器从 RUSTUP_UPDATE_ROOT 取（rustup 自己认的变量，设了国内源时一起走国内源），没设时取官方地址；下面的 SHA-256 照样核对。
+# 连不上或长时间几乎不动（60 秒内低于 10 KB/s）就放弃这一次、交给 retry 重来，不让一个卡住的连接耗光作业时限。
+retry curl -sSfL --connect-timeout 30 --speed-limit 10240 --speed-time 60 -o /tmp/rustup-init \
+  "${RUSTUP_UPDATE_ROOT:-https://static.rust-lang.org/rustup}/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"
 echo "$RUSTUP_SHA256  /tmp/rustup-init" | sha256sum -c - > /dev/null
 chmod +x /tmp/rustup-init
 /tmp/rustup-init -y -q --profile minimal --default-toolchain none
